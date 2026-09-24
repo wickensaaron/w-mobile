@@ -187,6 +187,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 bingeGroupOnly = bingeGroupOnlyManualMode,
                 debridEnabled = debridSettings.canResolvePlayableLinks,
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
+                preferredAudioLanguage = settings.preferredAudioLanguage,
             )
 
         fun tryBingeGroupOnly(streams: List<StreamItem>): StreamItem? {
@@ -204,6 +205,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 bingeGroupOnly = true,
                 debridEnabled = debridSettings.canResolvePlayableLinks,
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
+                preferredAudioLanguage = settings.preferredAudioLanguage,
             )
         }
 

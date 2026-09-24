@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -64,6 +65,8 @@ fun DetailActionButtons(
     isTablet: Boolean = false,
     onPlayClick: () -> Unit = {},
     onPlayLongClick: (() -> Unit)? = null,
+    chooseSourceLabel: String? = null,
+    onChooseSourceClick: (() -> Unit)? = null,
 ) {
     val playPainter = appIconPainter(AppIconResource.PlayerPlay)
     val buttonHeight = if (isTablet) 56.dp else 52.dp
@@ -130,6 +133,29 @@ fun DetailActionButtons(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+
+            if (chooseSourceLabel != null && onChooseSourceClick != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    modifier = Modifier.height(buttonHeight),
+                    shape = playShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Box(
+                        modifier = Modifier.clickable(role = Role.Button, onClick = onChooseSourceClick)
+                            .height(buttonHeight),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = chooseSourceLabel,
+                            modifier = Modifier.widthIn(min = 105.dp).padding(horizontal = 10.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
 

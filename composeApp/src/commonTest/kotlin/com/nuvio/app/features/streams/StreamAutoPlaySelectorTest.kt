@@ -9,6 +9,51 @@ import kotlin.test.assertTrue
 class StreamAutoPlaySelectorTest {
 
     @Test
+    fun `smart mode ranks a cached ready source ahead of a higher resolution direct source`() {
+        val uncached4k = stream(addonName = "Direct", url = "https://example.com/4k.mp4", name = "Movie 2160p")
+        val cached1080 = stream(
+            addonName = "Cached", infoHash = "0123456789012345678901234567890123456789",
+            name = "Movie 1080p", cacheState = StreamDebridCacheState.CACHED,
+        )
+        val evaluation = StreamAutoPlaySelector.evaluateAutoPlayStream(
+            streams = listOf(uncached4k, cached1080), mode = StreamAutoPlayMode.SMART,
+            regexPattern = "", source = StreamAutoPlaySource.ALL_SOURCES,
+            installedAddonNames = setOf("Direct", "Cached"),
+            selectedAddons = emptySet(), selectedPlugins = emptySet(),
+            activeResolverProviderId = "premiumize",
+        )
+        assertEquals(cached1080, evaluation.stream)
+        assertEquals(listOf(cached1080, uncached4k), evaluation.readyStreams)
+    }
+
+    @Test
+    fun `smart mode uses resolution among ready links and preserves manual choice`() {
+        val hd = stream(addonName = "Addon", url = "https://example.com/hd.mp4", name = "Movie 720p")
+        val fullHd = stream(addonName = "Addon", url = "https://example.com/fhd.mp4", name = "Movie 1080p")
+        fun choose(mode: StreamAutoPlayMode) = StreamAutoPlaySelector.selectAutoPlayStream(
+            streams = listOf(hd, fullHd), mode = mode, regexPattern = "",
+            source = StreamAutoPlaySource.ALL_SOURCES, installedAddonNames = setOf("Addon"),
+            selectedAddons = emptySet(), selectedPlugins = emptySet(),
+        )
+        assertEquals(fullHd, choose(StreamAutoPlayMode.SMART))
+        assertEquals(hd, choose(StreamAutoPlayMode.FIRST_STREAM))
+        assertNull(choose(StreamAutoPlayMode.MANUAL))
+    }
+
+    @Test
+    fun `smart mode keeps original source order when metadata is equal`() {
+        val first = stream(addonName = "First", url = "https://example.com/a.mp4")
+        val second = stream(addonName = "Second", url = "https://example.com/b.mp4")
+        val evaluation = StreamAutoPlaySelector.evaluateAutoPlayStream(
+            streams = listOf(first, second), mode = StreamAutoPlayMode.SMART,
+            regexPattern = "", source = StreamAutoPlaySource.ALL_SOURCES,
+            installedAddonNames = setOf("First", "Second"),
+            selectedAddons = emptySet(), selectedPlugins = emptySet(),
+        )
+        assertEquals(listOf(first, second), evaluation.readyStreams)
+    }
+
+    @Test
     fun `bingeGroup-first selects matching stream before first stream mode`() {
         val first = stream(
             addonName = "AddonA",

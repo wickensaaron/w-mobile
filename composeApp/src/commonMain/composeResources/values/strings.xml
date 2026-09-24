@@ -26,6 +26,8 @@
     <string name="action_next">Next</string>
     <string name="action_ok">OK</string>
     <string name="action_play">Play</string>
+    <string name="action_watch">Watch</string>
+    <string name="action_choose_source">Choose Source</string>
     <string name="action_previous">Previous</string>
     <string name="action_remove">Remove</string>
     <string name="action_remove_anyway">Remove anyway</string>
@@ -1202,6 +1204,8 @@
     <string name="settings_playback_stream_selection_mode">Auto Stream Selection</string>
     <string name="settings_playback_stream_selection_mode_first_stream">Auto-play first source</string>
     <string name="settings_playback_stream_selection_mode_first_stream_description">Play the first available source automatically.</string>
+    <string name="settings_playback_stream_selection_mode_smart">Auto-play best source</string>
+    <string name="settings_playback_stream_selection_mode_smart_description">Prefer ready sources, then resolution and HDR when known. Manual source choice remains available.</string>
     <string name="settings_playback_stream_selection_mode_manual">Manual (choose stream)</string>
     <string name="settings_playback_stream_selection_mode_manual_description">Always show source list and let me choose.</string>
     <string name="settings_playback_stream_selection_mode_regex">Auto-play regex match</string>

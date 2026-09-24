@@ -119,6 +119,7 @@ import com.nuvio.app.features.library.toLibraryItem
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.streams.rememberPlaybackAvailability
 import com.nuvio.app.features.streams.StreamAutoPlayPolicy
+import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
 import com.nuvio.app.features.tmdb.TmdbService
 import com.nuvio.app.features.trakt.TraktAuthRepository
@@ -749,7 +750,8 @@ fun MetaDetailsScreen(
                     seasonNumber = seriesAction?.seasonNumber,
                     episodeNumber = seriesAction?.episodeNumber,
                 )
-                val playText = stringResource(Res.string.action_play)
+                val playText = if (playerSettingsUiState.streamAutoPlayMode == StreamAutoPlayMode.SMART)
+                    stringResource(Res.string.action_watch) else stringResource(Res.string.action_play)
                 val resumeText = stringResource(Res.string.action_resume)
                 val playButtonLabel = remember(movieProgress, seriesAction, meta.type, hasEpisodes, playText, resumeText) {
                     when {
@@ -2192,6 +2194,9 @@ private fun ConfiguredMetaSections(
                     isTablet = isTablet,
                     onPlayClick = onPrimaryPlayClick,
                     onPlayLongClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
+                    chooseSourceLabel = if (showManualPlayOption && onPrimaryPlayLongClick != null)
+                        stringResource(Res.string.action_choose_source) else null,
+                    onChooseSourceClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
                 )
             }
             MetaScreenSectionKey.OVERVIEW -> {

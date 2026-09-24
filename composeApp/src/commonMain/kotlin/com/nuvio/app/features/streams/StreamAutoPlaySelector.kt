@@ -45,6 +45,7 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        preferredAudioLanguage: String? = null,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -59,6 +60,7 @@ object StreamAutoPlaySelector {
             bingeGroupOnly = bingeGroupOnly,
             debridEnabled = debridEnabled,
             activeResolverProviderId = activeResolverProviderId,
+            preferredAudioLanguage = preferredAudioLanguage,
         ).stream
 
     fun evaluateAutoPlayStream(
@@ -74,6 +76,7 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        preferredAudioLanguage: String? = null,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -101,9 +104,12 @@ object StreamAutoPlaySelector {
         } else {
             emptyList()
         }
-        val preferredReadyStream = bingeGroupCandidates.firstOrNull { stream ->
+        val readyBingeGroupCandidates = bingeGroupCandidates.filter { stream ->
             stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
         }
+        val preferredReadyStream = if (mode == StreamAutoPlayMode.SMART)
+            smartOrder(readyBingeGroupCandidates, preferredAudioLanguage).firstOrNull()
+        else readyBingeGroupCandidates.firstOrNull()
         if (bingeGroupOnly) {
             val readyStreams = preferredReadyStream?.let(::listOf).orEmpty()
             return StreamAutoPlayEvaluation(
@@ -119,16 +125,19 @@ object StreamAutoPlaySelector {
             return StreamAutoPlayEvaluation()
         }
         val preferredStream = if (preferBingeGroupInSelection && targetBingeGroup.isNotEmpty()) {
-            candidateStreams.firstOrNull { stream ->
+            val ready = candidateStreams.filter { stream ->
                 stream.behaviorHints.bingeGroup == targetBingeGroup &&
                     stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
             }
+            if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage).firstOrNull()
+            else ready.firstOrNull()
         } else {
             null
         }
         val matchingStreams = when (mode) {
             StreamAutoPlayMode.MANUAL -> emptyList()
             StreamAutoPlayMode.FIRST_STREAM -> candidateStreams
+            StreamAutoPlayMode.SMART -> candidateStreams
             StreamAutoPlayMode.REGEX_MATCH -> {
                 val pattern = regexPattern.trim()
 
@@ -178,6 +187,7 @@ object StreamAutoPlaySelector {
             matchingStreams
                 .filter { it.isAutoPlayable(debridEnabled, activeResolverProviderId) }
                 .filterNot { it == preferredStream }
+                .let { ready -> if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage) else ready }
                 .forEach(::add)
         }
         val selected = readyStreams.firstOrNull()
@@ -229,6 +239,42 @@ object StreamAutoPlaySelector {
     private fun String?.matchesResolver(activeResolverProviderId: String?): Boolean {
         val active = activeResolverProviderId?.trim().orEmpty()
         return active.isBlank() || this == null || equals(active, ignoreCase = true)
+    }
+
+    /** Stable ranking from metadata the addon already supplied. Unknown fields stay neutral. */
+    private fun smartOrder(streams: List<StreamItem>, preferredAudioLanguage: String?): List<StreamItem> = streams.withIndex()
+        .sortedWith(compareByDescending<IndexedValue<StreamItem>> { smartScore(it.value, preferredAudioLanguage) }
+            .thenBy { it.index })
+        .map { it.value }
+
+    private fun smartScore(stream: StreamItem, preferredAudioLanguage: String?): Int {
+        val parsed = stream.clientResolve?.stream?.raw?.parsed
+        val description = listOfNotNull(parsed?.resolution, parsed?.quality, stream.name,
+            stream.title, stream.description).joinToString(" ").lowercase()
+        var score = when {
+            stream.isDirectDebridStream || stream.isCachedDebridTorrentStream -> 5_000
+            stream.playableDirectUrl != null -> 3_000
+            else -> 0
+        }
+        score += when {
+            Regex("\\b(2160p|4k|uhd)\\b").containsMatchIn(description) -> 800
+            Regex("\\b(1080p|fhd)\\b").containsMatchIn(description) -> 650
+            Regex("\\b(720p|hd)\\b").containsMatchIn(description) -> 400
+            Regex("\\b(480p|sd)\\b").containsMatchIn(description) -> 150
+            else -> 0
+        }
+        // Do not assume that a device supports Dolby Vision or a particular codec.
+        if (parsed?.hdr?.any { it.contains("hdr", true) } == true ||
+            Regex("\\b(hdr10|hdr10\\+|hlg)\\b").containsMatchIn(description)) score += 75
+        if (Regex("\\b(cam|telesync|telecine)\\b").containsMatchIn(description)) score -= 500
+        val preferredLanguage = preferredAudioLanguage?.lowercase()?.takeIf { it.length in 2..3 && it != "device" }
+        val knownLanguages = parsed?.languages.orEmpty()
+        if (preferredLanguage != null && knownLanguages.isNotEmpty()) {
+            score += if (knownLanguages.any { it.lowercase().startsWith(preferredLanguage) }) 100 else -100
+        }
+        val size = stream.clientResolve?.stream?.raw?.size
+        if (size != null && size > 30L * 1024 * 1024 * 1024) score -= 100
+        return score
     }
 }
 
