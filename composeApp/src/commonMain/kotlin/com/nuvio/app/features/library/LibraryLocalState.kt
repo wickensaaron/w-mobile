@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 internal data class LibraryProfileToken(
     val profileId: Int,
     val generation: Long,
+    val syncIdentity: String? = null,
 )
 
 internal data class LibraryLocalSnapshot(
@@ -23,6 +24,7 @@ internal data class LibraryLocalSnapshot(
     val deltaInitialized: Boolean,
     val pendingUpsertKeys: List<LibrarySyncKey>,
     val pendingDeleteKeys: List<LibrarySyncKey>,
+    val otherIdentities: Map<String, StoredLibraryPayload> = emptyMap(),
 ) {
     val hasPendingPush: Boolean
         get() = pendingUpsertKeys.isNotEmpty() || pendingDeleteKeys.isNotEmpty()
@@ -73,6 +75,8 @@ internal class LibraryLocalState {
     private var deltaInitialized = false
     private var pendingUpsertKeysByKey: MutableMap<String, LibrarySyncKey> = mutableMapOf()
     private var pendingDeleteKeysByKey: MutableMap<String, LibrarySyncKey> = mutableMapOf()
+    private var syncIdentity: String? = null
+    private var otherIdentities: Map<String, StoredLibraryPayload> = emptyMap()
     private var pushJob: Job? = null
 
     fun snapshot(): LibraryLocalSnapshot = synchronized(lock) {
@@ -126,10 +130,12 @@ internal class LibraryLocalState {
         }
     }
 
-    fun beginProfileLoad(profileId: Int): LibraryStateTransition = synchronized(lock) {
+    fun beginProfileLoad(profileId: Int, syncIdentity: String? = null): LibraryStateTransition = synchronized(lock) {
         val detachedPushJob = pushJob
         pushJob = null
         currentProfileId = profileId
+        this.syncIdentity = syncIdentity
+        otherIdentities = emptyMap()
         profileGeneration += 1L
         revision += 1L
         contentRevision += 1L
@@ -154,6 +160,7 @@ internal class LibraryLocalState {
         deltaInitialized: Boolean = false,
         pendingUpsertKeys: Collection<LibrarySyncKey> = emptyList(),
         pendingDeleteKeys: Collection<LibrarySyncKey> = emptyList(),
+        otherIdentities: Map<String, StoredLibraryPayload> = emptyMap(),
     ): LibraryLocalSnapshot? = synchronized(lock) {
         if (activeProfileId != token.profileId || !isCurrentLocked(token)) {
             return@synchronized null
@@ -168,6 +175,7 @@ internal class LibraryLocalState {
             .associateByTo(mutableMapOf()) { libraryItemKey(it.contentId, it.contentType) }
             .apply { pendingUpsertKeysByKey.keys.forEach(::remove) }
         pendingDeleteKeysByKey.keys.forEach(itemsById::remove)
+        this.otherIdentities = otherIdentities
         hasLoaded = true
         isLoading = false
         revision += 1L
@@ -189,6 +197,8 @@ internal class LibraryLocalState {
         deltaInitialized = false
         pendingUpsertKeysByKey = mutableMapOf()
         pendingDeleteKeysByKey = mutableMapOf()
+        syncIdentity = null
+        otherIdentities = emptyMap()
         LibraryStateTransition(
             snapshot = snapshotLocked(),
             detachedPushJob = detachedPushJob,
@@ -361,10 +371,51 @@ internal class LibraryLocalState {
         }
     }
 
+    fun isPendingUpsert(token: LibraryProfileToken, item: LibraryItem): Boolean = synchronized(lock) {
+        if (!isCurrentLocked(token)) return@synchronized false
+        val key = libraryItemKey(item.id, item.type)
+        key in pendingUpsertKeysByKey && itemsById[key] == item
+    }
+
+    fun isPendingDelete(token: LibraryProfileToken, key: LibrarySyncKey): Boolean = synchronized(lock) {
+        isCurrentLocked(token) && pendingDeleteKeysByKey[libraryItemKey(key.contentId, key.contentType)] == key
+    }
+
+    fun acknowledgeUpsert(
+        token: LibraryProfileToken,
+        item: LibraryItem,
+        expectedContentRevision: Long,
+    ): LibraryLocalSnapshot? = synchronized(lock) {
+        val key = libraryItemKey(item.id, item.type)
+        if (!isCurrentLocked(token) || contentRevision != expectedContentRevision ||
+            key !in pendingUpsertKeysByKey || itemsById[key] != item
+        ) {
+            return@synchronized null
+        }
+        pendingUpsertKeysByKey.remove(key)
+        revision += 1L
+        snapshotLocked()
+    }
+
+    fun acknowledgeDelete(
+        token: LibraryProfileToken,
+        key: LibrarySyncKey,
+        expectedContentRevision: Long,
+    ): LibraryLocalSnapshot? = synchronized(lock) {
+        val localKey = libraryItemKey(key.contentId, key.contentType)
+        if (!isCurrentLocked(token) || contentRevision != expectedContentRevision ||
+            pendingDeleteKeysByKey[localKey] != key
+        ) return@synchronized null
+        pendingDeleteKeysByKey.remove(localKey)
+        revision += 1L
+        snapshotLocked()
+    }
+
     private fun tokenLocked(): LibraryProfileToken =
         LibraryProfileToken(
             profileId = currentProfileId,
             generation = profileGeneration,
+            syncIdentity = syncIdentity,
         )
 
     private fun snapshotLocked(): LibraryLocalSnapshot =
@@ -379,10 +430,12 @@ internal class LibraryLocalState {
             deltaInitialized = deltaInitialized,
             pendingUpsertKeys = pendingUpsertKeysByKey.values.toList(),
             pendingDeleteKeys = pendingDeleteKeysByKey.values.toList(),
+            otherIdentities = otherIdentities,
         )
 
     private fun isCurrentLocked(token: LibraryProfileToken): Boolean =
-        currentProfileId == token.profileId && profileGeneration == token.generation
+        currentProfileId == token.profileId && profileGeneration == token.generation &&
+            syncIdentity == token.syncIdentity
 
     private fun isCurrentLocked(snapshot: LibraryLocalSnapshot): Boolean =
         isCurrentLocked(snapshot.token) && revision == snapshot.revision

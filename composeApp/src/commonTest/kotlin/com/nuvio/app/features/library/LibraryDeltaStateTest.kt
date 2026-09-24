@@ -2,6 +2,9 @@ package com.nuvio.app.features.library
 
 import com.nuvio.app.features.library.sync.LibraryDeltaEvent
 import com.nuvio.app.features.library.sync.LibrarySyncKey
+import com.nuvio.app.features.watching.sync.LegacyUnboundSyncIdentity
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -129,6 +132,80 @@ class LibraryDeltaStateTest {
 
         assertTrue(snapshot.items.isEmpty())
         assertEquals(listOf("item"), snapshot.pendingDeleteKeys.map { it.contentId })
+    }
+
+    @Test
+    fun `pending library writes stay with their backend and account`() {
+        val original = StoredLibraryPayload(
+            items = listOf(libraryItem("saved")),
+            pendingUpsertKeys = listOf(LibrarySyncKey("saved", "movie")),
+            pendingDeleteKeys = listOf(LibrarySyncKey("removed", "movie")),
+            syncIdentity = "https://server-a|user-a",
+        )
+        val switched = original.forSyncIdentity("https://server-b|user-b")
+        val reloaded = LibraryStoragePayloadCodec.decode(Json.encodeToString(switched))
+            .forSyncIdentity("https://server-a|user-a")
+
+        assertTrue(switched.items.isEmpty())
+        assertTrue(switched.pendingUpsertKeys.isEmpty())
+        assertTrue(switched.pendingDeleteKeys.isEmpty())
+        assertEquals(listOf("saved"), reloaded.pendingUpsertKeys.map { it.contentId })
+        assertEquals(listOf("removed"), reloaded.pendingDeleteKeys.map { it.contentId })
+    }
+
+    @Test
+    fun `new account save retains the original account queue in the same payload`() {
+        val original = StoredLibraryPayload(
+            items = listOf(libraryItem("from-a")),
+            pendingUpsertKeys = listOf(LibrarySyncKey("from-a", "movie")),
+            syncIdentity = "https://server-a|user-a",
+        )
+        val selected = original.forSyncIdentity("https://server-b|user-b")
+        val state = LibraryLocalState()
+        val token = state.beginProfileLoad(1, selected.syncIdentity).snapshot.token
+        state.completeProfileLoad(
+            token = token,
+            activeProfileId = 1,
+            items = selected.items,
+            otherIdentities = selected.otherIdentities,
+        )
+        state.upsert(libraryItem("from-b"))
+        val returned = LibraryStoragePayloadCodec.decode(
+            LibraryStoragePayloadCodec.encode(state.snapshot()),
+        ).forSyncIdentity("https://server-a|user-a")
+
+        assertEquals(listOf("from-a"), returned.pendingUpsertKeys.map { it.contentId })
+        assertEquals(listOf("from-a"), returned.items.map { it.id })
+    }
+
+    @Test
+    fun `legacy pending writes are retained without being assigned to a new account`() {
+        val selected = StoredLibraryPayload(
+            items = listOf(libraryItem("saved")),
+            pendingUpsertKeys = listOf(LibrarySyncKey("saved", "movie")),
+        ).forSyncIdentity("https://new-server|new-user")
+
+        assertTrue(selected.items.isEmpty())
+        assertTrue(selected.pendingUpsertKeys.isEmpty())
+        assertEquals(
+            listOf("saved"),
+            selected.otherIdentities.getValue(LegacyUnboundSyncIdentity).pendingUpsertKeys.map { it.contentId },
+        )
+    }
+
+    @Test
+    fun `signed out view does not expose a previous account library`() {
+        val signedIn = StoredLibraryPayload(
+            items = listOf(libraryItem("private")),
+            syncIdentity = "https://server-a|user-a",
+        )
+        val signedOut = signedIn.forSyncIdentity(null)
+
+        assertTrue(signedOut.items.isEmpty())
+        assertEquals(
+            listOf("private"),
+            signedOut.forSyncIdentity("https://server-a|user-a").items.map { it.id },
+        )
     }
 
     private fun loadedState(items: List<LibraryItem>): LibraryLocalState {
