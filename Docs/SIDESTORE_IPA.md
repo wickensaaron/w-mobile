@@ -2,6 +2,8 @@
 
 The iOS app is built from the Kotlin Multiplatform source on macOS. The repository's `codemagic.yaml` runs its existing iOS dependency preparation and unsigned device-IPA packaging scripts on a Codemagic Mac. SideStore then signs the IPA with the device owner's Apple Account when it is installed.
 
+The owner chose to keep this branch local. The workflow is ready in the local repository, but Codemagic cannot run it until the owner decides to upload the source to a connected repository or uses another macOS build machine.
+
 ## Codemagic setup
 
 1. Connect the `wickensaaron/w-mobile` repository in a personal Codemagic account and select the branch containing `codemagic.yaml`.
