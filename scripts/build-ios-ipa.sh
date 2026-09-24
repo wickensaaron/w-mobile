@@ -54,9 +54,27 @@ fi
     CODE_SIGN_IDENTITY= \
     build
 
-app_path="${derived_data}/Build/Products/${configuration}-iphoneos/Nuvio.app"
-if [[ ! -d "${app_path}" ]]; then
-    echo "iOS build did not produce ${app_path}." >&2
+products_directory="${derived_data}/Build/Products/${configuration}-iphoneos"
+app_path=""
+for candidate in "${products_directory}"/*.app; do
+    [[ -d "${candidate}" ]] || continue
+    candidate_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${candidate}/Info.plist" 2>/dev/null || true)"
+    if [[ "${candidate_bundle_id}" == "com.wplatform.mobile" || "${candidate_bundle_id}" == "com.wplatform.mobile.debug" ]]; then
+        if [[ -n "${app_path}" ]]; then
+            echo "Multiple W Media Player app bundles were produced." >&2
+            exit 1
+        fi
+        app_path="${candidate}"
+    fi
+done
+if [[ -z "${app_path}" ]]; then
+    echo "iOS build did not produce a W Media Player app in ${products_directory}." >&2
+    exit 1
+fi
+
+display_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "${app_path}/Info.plist" 2>/dev/null || true)"
+if [[ "${display_name}" != "W Media Player" ]]; then
+    echo "Built iOS app has unexpected display name: ${display_name}." >&2
     exit 1
 fi
 
@@ -102,10 +120,10 @@ output_directory="$(cd "${output_directory}" && pwd -P)"
 package_root="$(mktemp -d "${TMPDIR:-/tmp}/nuvio-ios-ipa.XXXXXX")"
 trap 'rm -rf "${package_root}"' EXIT
 mkdir -p "${package_root}/Payload"
-ditto "${app_path}" "${package_root}/Payload/Nuvio.app"
+ditto "${app_path}" "${package_root}/Payload/$(basename "${app_path}")"
 
-ipa_path="${output_directory}/nuvio-${version}-full-${configuration_slug}.ipa"
-temporary_ipa="${package_root}/nuvio-${version}-full-${configuration_slug}.ipa"
+ipa_path="${output_directory}/W-Media-Player-${version}-full-${configuration_slug}.ipa"
+temporary_ipa="${package_root}/W-Media-Player-${version}-full-${configuration_slug}.ipa"
 (
     cd "${package_root}"
     /usr/bin/zip -qry "${temporary_ipa}" Payload

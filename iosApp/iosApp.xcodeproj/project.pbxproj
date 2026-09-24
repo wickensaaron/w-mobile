@@ -36,7 +36,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		07921B4E8F8546BEE682C2FE /* W.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = W.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		07921B4E8F8546BEE682C2FE /* W Media Player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "W Media Player.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A1B2C3D4E5F60718293A4B5 /* DownloadsWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DownloadsWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -167,7 +167,7 @@
 				A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */,
 			);
 			productName = iosApp;
-			productReference = 07921B4E8F8546BEE682C2FE /* W.app */;
+			productReference = 07921B4E8F8546BEE682C2FE /* W Media Player.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -340,7 +340,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 8QBDZ766S3;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = DownloadsWidgetExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
@@ -364,7 +364,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 8QBDZ766S3;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = DownloadsWidgetExtension/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
@@ -399,7 +399,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
-				DEVELOPMENT_TEAM = 8QBDZ766S3;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iosApp/Info.plist;
@@ -442,7 +442,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
-				DEVELOPMENT_TEAM = 8QBDZ766S3;
+				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iosApp/Info.plist;

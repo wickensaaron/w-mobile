@@ -1,0 +1,26 @@
+workflows:
+  sidestore_ipa:
+    name: W Media Player SideStore IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: latest
+      vars:
+        IOS_CONFIGURATION: Release
+        NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
+        NUVIO_GRADLE_JVMARGS: -Xmx4608M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M
+        NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx4608M
+    scripts:
+      - name: Check public Supabase configuration
+        script: |
+          if [ -z "${NUVIO_SUPABASE_ANON_KEY:-}" ]; then
+            echo "Set NUVIO_SUPABASE_ANON_KEY in Codemagic application environment variables." >&2
+            exit 1
+          fi
+      - name: Prepare iOS dependencies
+        script: ./scripts/prepare-ios-dependencies.sh
+      - name: Build unsigned SideStore IPA
+        script: ./scripts/build-ios-ipa.sh
+    artifacts:
+      - build/ios-ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
