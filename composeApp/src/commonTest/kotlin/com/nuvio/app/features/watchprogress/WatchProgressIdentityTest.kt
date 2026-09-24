@@ -364,6 +364,24 @@ class WatchProgressIdentityTest {
     }
 
     @Test
+    fun `snapshot preserves pending local rewind even when remote timestamp is newer`() {
+        val local = entry(
+            progressKey = "opaque",
+            lastUpdatedEpochMs = 100L,
+            lastPositionMs = 200L,
+        )
+        val merged = WatchProgressRepository.mergeWatchProgressEntriesPreservingUnsynced(
+            serverEntries = listOf(
+                record(contentId = "show", progressKey = "opaque", lastWatched = 200L, position = 800L),
+            ),
+            localEntries = listOf(local),
+            dirtyProgressKeys = setOf("opaque"),
+        )
+
+        assertEquals(local.lastPositionMs, merged.getValue("opaque").lastPositionMs)
+    }
+
+    @Test
     fun `delta upsert with equal timestamp and higher position wins`() {
         val current = entry(
             progressKey = "opaque",

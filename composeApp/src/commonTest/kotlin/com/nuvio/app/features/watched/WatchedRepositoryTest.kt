@@ -4,8 +4,12 @@ import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.WatchProgressSource
+import com.nuvio.app.features.watching.sync.LegacyUnboundSyncIdentity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -16,8 +20,8 @@ import kotlin.test.assertTrue
 class WatchedRepositoryTest {
     @Test
     fun oversizedLegacyPayload_isNotRestored() {
-        assertTrue(shouldRestoreWatchedPayload(4 * 1024 * 1024))
-        assertFalse(shouldRestoreWatchedPayload(4 * 1024 * 1024 + 1))
+        assertTrue(shouldRestoreWatchedPayload(16 * 1024 * 1024))
+        assertFalse(shouldRestoreWatchedPayload(16 * 1024 * 1024 + 1))
     }
 
     @Test
@@ -157,7 +161,7 @@ class WatchedRepositoryTest {
     }
 
     @Test
-    fun snapshot_acknowledgesOnlyDirtyKeyWithEqualOrNewerRemoteItem() {
+    fun snapshot_preservesPendingMarksUntilWriteSucceeds() {
         val acknowledgedLocal = watchedItem(id = "acknowledged", markedAtEpochMs = 1_000L)
         val stillPendingLocal = watchedItem(id = "still-pending", markedAtEpochMs = 2_000L)
         val acknowledgedRemote = acknowledgedLocal.copy(name = "server copy")
@@ -170,9 +174,65 @@ class WatchedRepositoryTest {
             dirtyKeys = setOf(acknowledgedKey, stillPendingKey),
         )
 
-        assertEquals(acknowledgedRemote, merged.items[acknowledgedKey])
+        assertEquals(acknowledgedLocal, merged.items[acknowledgedKey])
         assertEquals(stillPendingLocal, merged.items[stillPendingKey])
-        assertEquals(setOf(stillPendingKey), merged.dirtyKeys)
+        assertEquals(setOf(acknowledgedKey, stillPendingKey), merged.dirtyKeys)
+    }
+
+    @Test
+    fun snapshot_doesNotReplacePendingMarkWithNewerRemoteTimestamp() {
+        val local = watchedItem(id = "rewatched", markedAtEpochMs = 1_000L)
+        val key = watchedItemKey(local.type, local.id)
+        val merged = mergeWatchedSnapshot(
+            serverItems = listOf(local.copy(name = "stale remote", markedAtEpochMs = 2_000L)),
+            localItems = listOf(local),
+            dirtyKeys = setOf(key),
+        )
+
+        assertEquals(local, merged.items[key])
+        assertEquals(setOf(key), merged.dirtyKeys)
+    }
+
+    @Test
+    fun pendingDeleteSurvivesReloadAndFiltersStaleSnapshot() {
+        val deleted = watchedItem(id = "deleted", markedAtEpochMs = 1_000L)
+        val key = watchedItemKey(deleted.type, deleted.id)
+        val payload = Json.encodeToString(StoredWatchedPayload(pendingDeletes = listOf(deleted)))
+        val restored = Json.decodeFromString<StoredWatchedPayload>(payload)
+        val merged = mergeWatchedSnapshot(
+            serverItems = listOf(deleted),
+            localItems = restored.items,
+            dirtyKeys = restored.dirtyWatchedKeys,
+            pendingDeleteKeys = setOf(key),
+        )
+
+        assertEquals(listOf(deleted), restored.pendingDeletes)
+        assertTrue(merged.items.isEmpty())
+    }
+
+    @Test
+    fun switchingSyncIdentityKeepsPendingDeleteForOriginalServer() {
+        val deleted = watchedItem(id = "deleted", markedAtEpochMs = 1_000L)
+        val original = StoredWatchedPayload(
+            pendingDeletes = listOf(deleted),
+            syncIdentity = "https://server-a|user-a",
+        )
+        val switched = original.forSyncIdentity("https://server-b|user-a")
+        val restored = Json.decodeFromString<StoredWatchedPayload>(Json.encodeToString(switched))
+            .forSyncIdentity("https://server-a|user-a")
+
+        assertTrue(switched.pendingDeletes.isEmpty())
+        assertEquals(listOf(deleted), restored.pendingDeletes)
+    }
+
+    @Test
+    fun legacyPendingWatchedDeleteCannotReplayToUnknownServer() {
+        val deleted = watchedItem(id = "legacy", markedAtEpochMs = 1_000L)
+        val selected = StoredWatchedPayload(pendingDeletes = listOf(deleted))
+            .forSyncIdentity("https://new-server|new-user")
+
+        assertTrue(selected.pendingDeletes.isEmpty())
+        assertEquals(listOf(deleted), selected.otherIdentities.getValue(LegacyUnboundSyncIdentity).pendingDeletes)
     }
 
     @Test

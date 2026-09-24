@@ -1,5 +1,6 @@
 package com.nuvio.app.features.watched
 
+import com.nuvio.app.features.watching.sync.LegacyUnboundSyncIdentity
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -49,8 +50,32 @@ internal data class StoredWatchedPayload(
     val deltaCursorEventId: Long = 0L,
     val deltaInitialized: Boolean = false,
     val dirtyWatchedKeys: Set<String> = emptySet(),
+    val pendingDeletes: List<WatchedItem> = emptyList(),
     val providerPayloads: Map<String, StoredProviderWatchedPayload> = emptyMap(),
+    val syncIdentity: String? = null,
+    val otherIdentities: Map<String, StoredWatchedPayload> = emptyMap(),
 )
+
+internal fun StoredWatchedPayload.forSyncIdentity(identity: String): StoredWatchedPayload {
+    if (syncIdentity == identity) return this
+    if (syncIdentity == null) {
+        val hasPendingWrites = dirtyWatchedKeys.isNotEmpty() || pendingDeletes.isNotEmpty() ||
+            providerPayloads.values.any { it.dirtyWatchedKeys.isNotEmpty() }
+        if (!hasPendingWrites) return copy(syncIdentity = identity)
+        return StoredWatchedPayload(
+            syncIdentity = identity,
+            otherIdentities = otherIdentities + (
+                LegacyUnboundSyncIdentity to copy(otherIdentities = emptyMap())
+            ),
+        )
+    }
+    val previous = copy(otherIdentities = emptyMap())
+    val selected = otherIdentities[identity] ?: StoredWatchedPayload()
+    return selected.copy(
+        syncIdentity = identity,
+        otherIdentities = otherIdentities - identity + (syncIdentity to previous),
+    )
+}
 
 internal fun compactProviderWatchedItems(items: Collection<WatchedItem>): List<StoredWatchedItemGroup> =
     items

@@ -3,6 +3,7 @@ package com.nuvio.app.features.watchprogress
 import com.nuvio.app.features.cloud.TorboxCloudLibraryPosterUrl
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.trakt.parseTraktIsoDateTimeToEpochMs
+import com.nuvio.app.features.watching.sync.LegacyUnboundSyncIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -35,6 +36,63 @@ class WatchProgressRulesTest {
         val decoded = WatchProgressCodec.decodePayload(payload)
 
         assertEquals(setOf("opaque-key"), decoded.dirtyProgressKeys)
+    }
+
+    @Test
+    fun `codec restores pending delete without restoring deleted progress`() {
+        val deleted = entry(videoId = "removed", progressKey = "removed-key")
+        val payload = WatchProgressCodec.encodePayload(
+            entries = emptyList(),
+            lastSuccessfulPushEpochMs = 0L,
+            deltaCursorEventId = 0L,
+            deltaInitialized = false,
+            pendingDeletes = listOf(deleted),
+        )
+
+        val restored = WatchProgressCodec.decodePayload(payload)
+
+        assertTrue(restored.entries.isEmpty())
+        assertEquals(listOf(deleted.withResolvedProgressKey()), restored.pendingDeletes)
+    }
+
+    @Test
+    fun `switching sync identity keeps offline progress for return to original server`() {
+        val pending = entry(videoId = "pending", progressKey = "pending-key")
+        val original = StoredWatchProgressPayload(
+            entries = listOf(pending),
+            dirtyProgressKeys = setOf("pending-key"),
+            syncIdentity = "https://server-a|user-a",
+        )
+        val switched = original.forSyncIdentity("https://server-b|user-a")
+        val serialized = WatchProgressCodec.encodePayload(
+            entries = switched.entries,
+            lastSuccessfulPushEpochMs = switched.lastSuccessfulPushEpochMs,
+            deltaCursorEventId = switched.deltaCursorEventId,
+            deltaInitialized = switched.deltaInitialized,
+            dirtyProgressKeys = switched.dirtyProgressKeys,
+            pendingDeletes = switched.pendingDeletes,
+            syncIdentity = switched.syncIdentity,
+            otherIdentities = switched.otherIdentities,
+        )
+        val restored = WatchProgressCodec.decodePayload(serialized)
+            .forSyncIdentity("https://server-a|user-a")
+
+        assertTrue(switched.entries.isEmpty())
+        assertEquals(setOf("pending-key"), restored.dirtyProgressKeys)
+        assertEquals(listOf(pending.withResolvedProgressKey()), restored.entries)
+    }
+
+    @Test
+    fun `legacy pending progress is preserved without assigning it to an unknown server`() {
+        val pending = entry(videoId = "legacy", progressKey = "legacy-key")
+        val selected = StoredWatchProgressPayload(
+            entries = listOf(pending),
+            dirtyProgressKeys = setOf("legacy-key"),
+        ).forSyncIdentity("https://new-server|new-user")
+
+        assertTrue(selected.entries.isEmpty())
+        assertTrue(selected.dirtyProgressKeys.isEmpty())
+        assertEquals(setOf("legacy-key"), selected.otherIdentities.getValue(LegacyUnboundSyncIdentity).dirtyProgressKeys)
     }
 
     @Test

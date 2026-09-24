@@ -8,6 +8,7 @@ import com.nuvio.app.features.watching.domain.isProgressComplete
 import com.nuvio.app.features.watching.domain.isSeriesLikeWatchingContentType
 import com.nuvio.app.features.watching.domain.resumeProgressForSeries
 import com.nuvio.app.features.watching.domain.shouldStoreProgress
+import com.nuvio.app.features.watching.sync.LegacyUnboundSyncIdentity
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -23,7 +24,29 @@ internal data class StoredWatchProgressPayload(
     val deltaCursorEventId: Long = 0L,
     val deltaInitialized: Boolean = false,
     val dirtyProgressKeys: Set<String> = emptySet(),
+    val pendingDeletes: List<WatchProgressEntry> = emptyList(),
+    val syncIdentity: String? = null,
+    val otherIdentities: Map<String, StoredWatchProgressPayload> = emptyMap(),
 )
+
+internal fun StoredWatchProgressPayload.forSyncIdentity(identity: String): StoredWatchProgressPayload {
+    if (syncIdentity == identity) return this
+    if (syncIdentity == null) {
+        if (dirtyProgressKeys.isEmpty() && pendingDeletes.isEmpty()) return copy(syncIdentity = identity)
+        return StoredWatchProgressPayload(
+            syncIdentity = identity,
+            otherIdentities = otherIdentities + (
+                LegacyUnboundSyncIdentity to copy(otherIdentities = emptyMap())
+            ),
+        )
+    }
+    val previous = copy(otherIdentities = emptyMap())
+    val selected = otherIdentities[identity] ?: StoredWatchProgressPayload()
+    return selected.copy(
+        syncIdentity = identity,
+        otherIdentities = otherIdentities - identity + (syncIdentity to previous),
+    )
+}
 
 internal object WatchProgressCodec {
     private val json = Json {
@@ -42,11 +65,15 @@ internal object WatchProgressCodec {
                     .newestByProgressKey()
                     .values
                     .sortedWith(watchProgressEntryFreshnessComparator.reversed())
+                val migratedKeys = migratedEntries.mapTo(mutableSetOf()) { it.resolvedProgressKey() }
                 storedPayload.copy(
                     entries = migratedEntries,
-                    dirtyProgressKeys = storedPayload.dirtyProgressKeys.intersect(
-                        migratedEntries.mapTo(mutableSetOf()) { entry -> entry.resolvedProgressKey() },
-                    ),
+                    dirtyProgressKeys = storedPayload.dirtyProgressKeys.intersect(migratedKeys),
+                    pendingDeletes = storedPayload.pendingDeletes
+                        .map { it.normalizedCompletion().withResolvedProgressKey() }
+                        .newestByProgressKey()
+                        .filterKeys { it !in migratedKeys }
+                        .values.toList(),
                 )
             }
         }.getOrDefault(StoredWatchProgressPayload())
@@ -65,6 +92,9 @@ internal object WatchProgressCodec {
         deltaCursorEventId: Long,
         deltaInitialized: Boolean,
         dirtyProgressKeys: Set<String> = emptySet(),
+        pendingDeletes: Collection<WatchProgressEntry> = emptyList(),
+        syncIdentity: String? = null,
+        otherIdentities: Map<String, StoredWatchProgressPayload> = emptyMap(),
     ): String =
         json.encodeToString(
             StoredWatchProgressPayload(
@@ -76,6 +106,9 @@ internal object WatchProgressCodec {
                 deltaCursorEventId = deltaCursorEventId,
                 deltaInitialized = deltaInitialized,
                 dirtyProgressKeys = dirtyProgressKeys,
+                pendingDeletes = pendingDeletes.newestByProgressKey().values.toList(),
+                syncIdentity = syncIdentity,
+                otherIdentities = otherIdentities,
             ),
         )
 }
