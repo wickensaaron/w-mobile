@@ -189,14 +189,15 @@ fun AuthScreen(
     modifier: Modifier = Modifier,
 ) {
     val authError by AuthRepository.error.collectAsStateWithLifecycle()
+    val authNotice by AuthRepository.notice.collectAsStateWithLifecycle()
     val deviceLinkAuthState by DeviceLinkAuthRepository.state.collectAsStateWithLifecycle()
     val serverConnectionState by ServerConnectionController.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     var isSignUp by rememberSaveable { mutableStateOf(false) }
     var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
-    var passwordVisible by rememberSaveable { mutableStateOf(false) }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var isLoading by rememberSaveable { mutableStateOf(false) }
     var emailFieldBounds by remember { mutableStateOf<Rect?>(null) }
     var passwordFieldBounds by remember { mutableStateOf<Rect?>(null) }
@@ -226,6 +227,17 @@ fun AuthScreen(
         focusManager.clearFocus(force = true)
         AuthRepository.clearError()
         DeviceLinkAuthRepository.start()
+    }
+
+    fun startGoogleSignIn() {
+        if (isLoading) return
+        DeviceLinkAuthRepository.cancel()
+        focusManager.clearFocus(force = true)
+        isLoading = true
+        scope.launch {
+            AuthRepository.signInWithGoogle()
+            isLoading = false
+        }
     }
 
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -286,6 +298,7 @@ fun AuthScreen(
                         passwordVisible = passwordVisible,
                         isLoading = isLoading,
                         authError = authError,
+                        authNotice = authNotice,
                         deviceLinkAuthState = deviceLinkAuthState,
                         deviceLinkEnabled = serverConnectionState.activeServer.capabilities.tvLogin,
                         formPaneWidth = if (compactLargeScreen) 460.dp else formPaneWidth,
@@ -303,6 +316,7 @@ fun AuthScreen(
                         },
                         onPasswordVisibilityToggle = { passwordVisible = !passwordVisible },
                         onSubmit = ::submitAuth,
+                        onGoogleSignIn = ::startGoogleSignIn,
                         onToggleAuthMode = ::toggleAuthMode,
                         onContinueWithoutAccount = {
                             focusManager.clearFocus(force = true)
@@ -322,6 +336,7 @@ fun AuthScreen(
                         passwordVisible = passwordVisible,
                         isLoading = isLoading,
                         authError = authError,
+                        authNotice = authNotice,
                         deviceLinkAuthState = deviceLinkAuthState,
                         deviceLinkEnabled = serverConnectionState.activeServer.capabilities.tvLogin,
                         statusBarTop = statusBarTop,
@@ -335,6 +350,7 @@ fun AuthScreen(
                         },
                         onPasswordVisibilityToggle = { passwordVisible = !passwordVisible },
                         onSubmit = ::submitAuth,
+                        onGoogleSignIn = ::startGoogleSignIn,
                         onToggleAuthMode = ::toggleAuthMode,
                         onContinueWithoutAccount = {
                             focusManager.clearFocus(force = true)
@@ -419,6 +435,7 @@ private fun AuthMobileLayout(
     passwordVisible: Boolean,
     isLoading: Boolean,
     authError: String?,
+    authNotice: String?,
     deviceLinkAuthState: DeviceLinkAuthState,
     deviceLinkEnabled: Boolean,
     statusBarTop: Dp,
@@ -426,6 +443,7 @@ private fun AuthMobileLayout(
     onPasswordChange: (String) -> Unit,
     onPasswordVisibilityToggle: () -> Unit,
     onSubmit: () -> Unit,
+    onGoogleSignIn: () -> Unit,
     onToggleAuthMode: () -> Unit,
     onContinueWithoutAccount: () -> Unit,
     onStartDeviceLink: () -> Unit,
@@ -480,6 +498,7 @@ private fun AuthMobileLayout(
                 passwordVisible = passwordVisible,
                 isLoading = isLoading,
                 authError = authError,
+                authNotice = authNotice,
                 deviceLinkAuthState = deviceLinkAuthState,
                 deviceLinkEnabled = deviceLinkEnabled,
                 metrics = MobileAuthFormMetrics,
@@ -487,6 +506,7 @@ private fun AuthMobileLayout(
                 onPasswordChange = onPasswordChange,
                 onPasswordVisibilityToggle = onPasswordVisibilityToggle,
                 onSubmit = onSubmit,
+                onGoogleSignIn = onGoogleSignIn,
                 onToggleAuthMode = onToggleAuthMode,
                 onContinueWithoutAccount = onContinueWithoutAccount,
                 onStartDeviceLink = onStartDeviceLink,
@@ -507,6 +527,7 @@ private fun AuthLargeLayout(
     passwordVisible: Boolean,
     isLoading: Boolean,
     authError: String?,
+    authNotice: String?,
     deviceLinkAuthState: DeviceLinkAuthState,
     deviceLinkEnabled: Boolean,
     formPaneWidth: Dp,
@@ -518,6 +539,7 @@ private fun AuthLargeLayout(
     onPasswordChange: (String) -> Unit,
     onPasswordVisibilityToggle: () -> Unit,
     onSubmit: () -> Unit,
+    onGoogleSignIn: () -> Unit,
     onToggleAuthMode: () -> Unit,
     onContinueWithoutAccount: () -> Unit,
     onStartDeviceLink: () -> Unit,
@@ -609,6 +631,7 @@ private fun AuthLargeLayout(
                     passwordVisible = passwordVisible,
                     isLoading = isLoading,
                     authError = authError,
+                    authNotice = authNotice,
                     deviceLinkAuthState = deviceLinkAuthState,
                     deviceLinkEnabled = deviceLinkEnabled,
                     metrics = formMetrics,
@@ -617,6 +640,7 @@ private fun AuthLargeLayout(
                     onPasswordChange = onPasswordChange,
                     onPasswordVisibilityToggle = onPasswordVisibilityToggle,
                     onSubmit = onSubmit,
+                    onGoogleSignIn = onGoogleSignIn,
                     onToggleAuthMode = onToggleAuthMode,
                     onContinueWithoutAccount = onContinueWithoutAccount,
                     onStartDeviceLink = onStartDeviceLink,
@@ -698,6 +722,7 @@ private fun AuthForm(
     passwordVisible: Boolean,
     isLoading: Boolean,
     authError: String?,
+    authNotice: String?,
     deviceLinkAuthState: DeviceLinkAuthState,
     deviceLinkEnabled: Boolean,
     metrics: AuthFormMetrics,
@@ -706,6 +731,7 @@ private fun AuthForm(
     onPasswordChange: (String) -> Unit,
     onPasswordVisibilityToggle: () -> Unit,
     onSubmit: () -> Unit,
+    onGoogleSignIn: () -> Unit,
     onToggleAuthMode: () -> Unit,
     onContinueWithoutAccount: () -> Unit,
     onStartDeviceLink: () -> Unit,
@@ -769,6 +795,18 @@ private fun AuthForm(
             )
         }
 
+        authNotice?.let { noticeText ->
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = noticeText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = AuthTextPrimary,
+                    fontSize = (13f * scale).sp,
+                    lineHeight = (18f * scale).sp,
+                ),
+            )
+        }
+
         if (isSignUp) {
             Spacer(modifier = Modifier.height(14.dp * scale))
             AuthTermsAcknowledgement(
@@ -802,6 +840,16 @@ private fun AuthForm(
         AuthDivider(scale = scale)
 
         Spacer(modifier = Modifier.height(metrics.secondaryTop))
+
+        AuthSecondaryButton(
+            text = "Continue with Google",
+            enabled = !isLoading,
+            height = metrics.secondaryHeight,
+            scale = scale,
+            onClick = onGoogleSignIn,
+        )
+
+        Spacer(modifier = Modifier.height(14.dp * scale))
 
         if (!isSignUp && deviceLinkEnabled) {
             DeviceLinkAuthSection(

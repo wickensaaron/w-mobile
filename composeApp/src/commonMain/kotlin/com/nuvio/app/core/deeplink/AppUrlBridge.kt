@@ -42,12 +42,31 @@ internal object AppDeepLinkRepository {
 fun handleAppUrl(url: String) {
     val normalizedUrl = url.trim()
     if (normalizedUrl.isBlank()) return
+    if (handleSupabaseAuthUrl(normalizedUrl)) return
     if (infusePlaybackCallbacks.handleUrl(normalizedUrl)) return
 
     ensureTrackingProvidersRegistered()
     TrackingProviderRegistry.handleAuthCallback(normalizedUrl)
     AppDeepLinkRepository.handleUrl(normalizedUrl)
 }
+
+internal fun isSupabaseAuthCallback(url: String): Boolean =
+    url.substringBefore('?').substringBefore('#') in setOf(
+        "wmedia://auth/google",
+        "wmedia://auth/confirm",
+    )
+
+private fun handleSupabaseAuthUrl(url: String): Boolean {
+    if (!isSupabaseAuthCallback(url)) return false
+    if (Regex("[?#&]error=").containsMatchIn(url)) {
+        com.nuvio.app.core.auth.AuthRepository.reportAuthCallbackFailure()
+        return true
+    }
+    handlePlatformSupabaseAuthCallback(url)
+    return true
+}
+
+internal expect fun handlePlatformSupabaseAuthCallback(url: String)
 
 fun buildMetaDeepLinkUrl(
     type: String,

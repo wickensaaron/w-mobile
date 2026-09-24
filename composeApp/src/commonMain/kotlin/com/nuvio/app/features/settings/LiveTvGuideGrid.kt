@@ -43,9 +43,9 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvRepository
 import com.nuvio.app.features.livetv.LiveTvUiState
+import com.nuvio.app.core.format.formatLocalHourMinute
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
-import kotlin.time.Instant
 
 private const val halfHourMs = 30L * 60 * 1000
 private const val guideHours = 6
@@ -103,7 +103,7 @@ internal fun LiveTvGuideGrid(
                 if (uiState.isGuideLoading) Text("Loading programme guide…")
                 uiState.guideErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (uiState.guideUrl.isBlank()) Text("Add an XMLTV URL in Sources to populate the guide.")
-                Text("Times shown in UTC. Swipe the timeline to see later programmes.", style = MaterialTheme.typography.bodySmall)
+                Text("Times shown in your device time zone. Swipe the timeline to see later programmes.", style = MaterialTheme.typography.bodySmall)
             }
         }
         item(key = "guide_time_axis") {
@@ -113,7 +113,7 @@ internal fun LiveTvGuideGrid(
                     repeat(guideHours * 2) { slot ->
                         val slotTime = windowStart + slot * halfHourMs
                         Text(
-                            slotTime.utcGuideTime(),
+                            formatLocalHourMinute(slotTime),
                             modifier = Modifier.width(halfHourWidth).padding(start = 6.dp, top = 8.dp),
                             style = MaterialTheme.typography.labelMedium,
                         )
@@ -189,5 +189,3 @@ private fun LiveTvGridChannelRow(
         }
     }
 }
-
-private fun Long.utcGuideTime(): String = Instant.fromEpochMilliseconds(this).toString().substring(11, 16)

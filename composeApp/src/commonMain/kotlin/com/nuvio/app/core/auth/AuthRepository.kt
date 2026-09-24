@@ -2,10 +2,14 @@ package com.nuvio.app.core.auth
 
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.network.ServerConfigurationRepository
+import com.nuvio.app.core.network.WCoreConnectionRepository
+import com.nuvio.app.features.addons.httpRequestRaw
 import com.nuvio.app.core.storage.LocalAccountDataCleaner
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.exception.AuthRestException
 import io.github.jan.supabase.auth.providers.builtin.Email
+import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.auth.status.SessionStatus
 import io.github.jan.supabase.exceptions.RestException
 import io.github.jan.supabase.functions.functions
@@ -20,6 +24,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
 
@@ -33,6 +41,9 @@ object AuthRepository {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
     private var initialized = false
     private var sessionStatusJob: Job? = null
     private var validatedRemoteUserId: String? = null
@@ -43,6 +54,7 @@ object AuthRepository {
 
         val savedAnonId = AuthStorage.loadAnonymousUserId()
         if (savedAnonId != null) {
+            WCoreConnectionRepository.clear()
             _state.value = AuthState.Authenticated(
                 userId = savedAnonId,
                 email = null,
@@ -63,8 +75,10 @@ object AuthRepository {
                             email = user?.email,
                             isAnonymous = false,
                         )
+                        WCoreConnectionRepository.onSupabaseSession(userId, status.session.accessToken)
                     }
                     is SessionStatus.NotAuthenticated -> {
+                        WCoreConnectionRepository.clear()
                         _state.value = AuthState.Unauthenticated
                     }
                     is SessionStatus.Initializing -> {
@@ -73,6 +87,7 @@ object AuthRepository {
                         }
                     }
                     is SessionStatus.RefreshFailure -> {
+                        WCoreConnectionRepository.clear()
                         _state.value = AuthState.Unauthenticated
                     }
                 }
@@ -102,6 +117,8 @@ object AuthRepository {
     @OptIn(ExperimentalUuidApi::class)
     fun signInAnonymously() {
         _error.value = null
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         val userId = Uuid.random().toString()
         AuthStorage.saveAnonymousUserId(userId)
         _state.value = AuthState.Authenticated(
@@ -113,10 +130,12 @@ object AuthRepository {
 
     suspend fun signUpWithEmail(email: String, password: String): Result<Unit> = runCatching {
         _error.value = null
-        SupabaseProvider.client.auth.signUpWith(Email) {
+        _notice.value = null
+        SupabaseProvider.client.auth.signUpWith(Email, redirectUrl = "wmedia://auth/confirm") {
             this.email = email
             this.password = password
         }
+        _notice.value = "Account created. If confirmation is required, check your email and open the link on this device."
         Unit
     }.onFailure { e ->
         log.e(e) { "Email sign-up failed" }
@@ -126,6 +145,7 @@ object AuthRepository {
 
     suspend fun signInWithEmail(email: String, password: String): Result<Unit> = runCatching {
         _error.value = null
+        _notice.value = null
         SupabaseProvider.client.auth.signInWith(Email) {
             this.email = email
             this.password = password
@@ -136,8 +156,45 @@ object AuthRepository {
             ?: getString(Res.string.auth_sign_in_failed)
     }
 
+    suspend fun signInWithGoogle(): Result<Unit> = runCatching {
+        _error.value = null
+        _notice.value = null
+        val configuration = ServerConfigurationRepository.active.value
+        if (configuration.backendUrl.isBlank() || configuration.publishableKey.isBlank()) {
+            throw GoogleProviderUnavailableException()
+        }
+        val settings = httpRequestRaw(
+            method = "GET",
+            url = "${configuration.backendUrl.trimEnd('/')}/auth/v1/settings",
+            headers = mapOf(
+                "apikey" to configuration.publishableKey,
+                "Accept" to "application/json",
+            ),
+            body = "",
+            followRedirects = false,
+            maxResponseBodyBytes = 16 * 1024,
+        )
+        if (settings.status !in 200..299 || googleProviderEnabled(settings.body) != true) {
+            throw GoogleProviderUnavailableException()
+        }
+        SupabaseProvider.client.auth.signInWith(Google, redirectUrl = "wmedia://auth/google")
+    }.onFailure { error ->
+        _error.value = if (error is GoogleProviderUnavailableException) {
+            "Google sign-in is not available on this server. Use email or continue as a guest."
+        } else {
+            "Google sign-in could not start. Try again or use email."
+        }
+    }
+
+    fun reportAuthCallbackFailure() {
+        _notice.value = null
+        _error.value = "Sign-in could not be completed. Try again or use email."
+    }
+
     suspend fun signOut(): Result<Unit> {
         _error.value = null
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         val anonymousRead = runCatching { AuthStorage.loadAnonymousUserId() }
         val wasAnonymous = anonymousRead.getOrNull() != null
         val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
@@ -178,6 +235,8 @@ object AuthRepository {
 
     suspend fun prepareForServerSwitch(): Result<Unit> {
         _error.value = null
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         val anonymousClear = runCatching { AuthStorage.clearAnonymousUserId() }
         validatedRemoteUserId = null
         val sessionClear = runCatching { SupabaseProvider.client.auth.clearSession() }
@@ -189,6 +248,8 @@ object AuthRepository {
     }
 
     fun reinitialize() {
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         sessionStatusJob?.cancel()
         sessionStatusJob = null
         initialized = false
@@ -207,6 +268,8 @@ object AuthRepository {
 
     private suspend fun clearLocalSessionAfterRemoteInvalidation() {
         _error.value = null
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         AuthStorage.clearAnonymousUserId()
         validatedRemoteUserId = null
         runCatching {
@@ -223,6 +286,8 @@ object AuthRepository {
 
     suspend fun deleteAccount(): Result<Unit> = runCatching {
         _error.value = null
+        _notice.value = null
+        WCoreConnectionRepository.clear()
         SupabaseProvider.client.functions.invoke("delete-account")
         SupabaseProvider.client.auth.signOut()
         validatedRemoteUserId = null
@@ -238,6 +303,7 @@ object AuthRepository {
 
     fun clearError() {
         _error.value = null
+        _notice.value = null
     }
 
     private fun isInvalidRemoteSessionError(error: Throwable): Boolean {
@@ -285,3 +351,10 @@ object AuthRepository {
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
 }
+
+private class GoogleProviderUnavailableException : IllegalStateException()
+
+internal fun googleProviderEnabled(body: String): Boolean? = runCatching {
+    Json.parseToJsonElement(body).jsonObject["external"]?.jsonObject
+        ?.get("google")?.jsonPrimitive?.booleanOrNull
+}.getOrNull()

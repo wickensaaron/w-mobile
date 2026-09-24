@@ -40,9 +40,9 @@ internal fun AppBrandWordmark(
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
-            text = "W",
+            text = "W Media Player",
             color = MaterialTheme.nuvio.colors.textPrimary,
-            fontSize = 32.sp,
+            fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
         )
     }

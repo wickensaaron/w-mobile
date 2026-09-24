@@ -219,7 +219,7 @@ internal fun AppLoadingContent(
             AppBrandWordmark(
                 contentDescription = stringResource(Res.string.app_brand_name),
                 modifier = Modifier
-                    .fillMaxWidth(0.48f)
+                    .fillMaxWidth(0.78f)
                     .height(44.dp),
             )
             Spacer(modifier = Modifier.height(tokens.spacing.sectionGap))

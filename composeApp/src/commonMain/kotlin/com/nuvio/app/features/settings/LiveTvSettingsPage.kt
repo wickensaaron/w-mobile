@@ -45,7 +45,7 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.core.ui.nuvio
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.time.Clock
-import kotlin.time.Instant
+import com.nuvio.app.core.format.formatLocalHourMinute
 
 @Composable
 internal fun LiveTvTabScreen() {
@@ -328,7 +328,7 @@ private fun LiveTvGuideRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
             val isOnNow = programme.startEpochMs <= now && programme.stopEpochMs > now
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "${programme.startEpochMs.utcHourMinute()}–${programme.stopEpochMs.utcHourMinute()} UTC",
+                    "${formatLocalHourMinute(programme.startEpochMs)}–${formatLocalHourMinute(programme.stopEpochMs)}",
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.weight(1f),
                 )
@@ -345,6 +345,3 @@ private fun LiveTvGuideRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
     }
     HorizontalDivider()
 }
-
-private fun Long.utcHourMinute(): String =
-    Instant.fromEpochMilliseconds(this).toString().substring(11, 16)
