@@ -422,7 +422,7 @@ object StreamsRepository {
                         type = type,
                         id = videoId,
                     )
-                    log.d { "Fetching streams from: $url" }
+                    log.d { "Fetching streams from addon ${addon.addonName}" }
 
                     val displayName = addon.addonName
                     val group = runCatchingUnlessCancelled {
@@ -447,7 +447,7 @@ object StreamsRepository {
                             )
                         },
                         onFailure = { err ->
-                            log.w(err) { "Failed to fetch streams from ${displayName}" }
+                            log.w { "Failed to fetch streams from ${displayName} (${err::class.simpleName})" }
                             AddonStreamGroup(
                                 addonName = displayName,
                                 addonId = addon.addonId,

@@ -37,6 +37,7 @@ import com.nuvio.app.features.profiles.ProfileBackgroundBackdrop
 import com.nuvio.app.features.search.SearchScreen
 import com.nuvio.app.features.settings.AppBrandWordmark
 import com.nuvio.app.features.settings.SettingsScreen
+import com.nuvio.app.features.settings.LiveTvTabScreen
 import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.navigation.AppRoute
 import com.nuvio.app.navigation.NuvioNavigator
@@ -169,6 +170,8 @@ internal fun AppTabHost(
                     disintegrationRequest = state.libraryDisintegrationRequest,
                 )
             }
+
+            AppScreenTab.LiveTv -> LiveTvTabScreen()
 
             AppScreenTab.Settings -> {
                 SettingsScreen(

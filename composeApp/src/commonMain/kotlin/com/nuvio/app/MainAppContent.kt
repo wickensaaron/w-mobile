@@ -120,6 +120,7 @@ import com.nuvio.app.features.library.librarySectionItemKey
 import com.nuvio.app.features.library.showTrackingMembershipRewriteFeedback
 import com.nuvio.app.features.library.toLibraryItem
 import com.nuvio.app.features.library.toMetaPreview
+import com.nuvio.app.features.livetv.LiveTvRepository
 import com.nuvio.app.features.membership.MemberAccessRepository
 import com.nuvio.app.features.notifications.EpisodeReleaseNotificationsRepository
 import com.nuvio.app.features.p2p.P2pSettingsRepository
@@ -175,6 +176,7 @@ import com.nuvio.app.navigation.*
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
@@ -403,6 +405,7 @@ internal fun MainAppContent(
                 searchScrollToTopRequests.tryEmit(Unit)
             }
             AppScreenTab.Library -> libraryScrollToTopRequests.tryEmit(Unit)
+            AppScreenTab.LiveTv -> Unit
             AppScreenTab.Settings -> settingsRootActionRequests.tryEmit(Unit)
         }
     }
@@ -1203,6 +1206,30 @@ internal fun MainAppContent(
             val zoomAnchor = PosterZoomAnchorHolder.consume()
             selectedContinueWatchingZoomAnchor = zoomAnchor
             selectedContinueWatchingForActions = item
+        }
+
+        LaunchedEffect(activePlaybackProfileId, navController) {
+            LiveTvRepository.playbackRequests.collect { channel ->
+                val launchId = PlayerLaunchStore.put(
+                    PlayerLaunch(
+                        profileId = activePlaybackProfileId,
+                        title = channel.name,
+                        sourceUrl = channel.streamUrl,
+                        sourceHeaders = channel.headers,
+                        streamType = channel.streamType,
+                        logo = channel.logoUrl,
+                        streamTitle = channel.name,
+                        streamSubtitle = channel.group,
+                        providerName = "Live TV",
+                        providerAddonId = "live-tv",
+                        contentType = "live",
+                        videoId = channel.id,
+                        parentMetaId = channel.id,
+                        parentMetaType = "live",
+                    ),
+                )
+                navController.navigate(PlayerRoute(launchId = launchId, title = channel.name))
+            }
         }
 
         AppUpdaterHost(

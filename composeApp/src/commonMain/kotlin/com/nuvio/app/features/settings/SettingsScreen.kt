@@ -153,6 +153,13 @@ fun SettingsScreen(
             PlayerSettingsRepository.ensureLoaded()
             PlayerSettingsRepository.uiState
         }.collectAsStateWithLifecycle()
+        val liveTvUiState by remember(com.nuvio.app.features.profiles.ProfileRepository.activeProfileId) {
+            com.nuvio.app.features.livetv.LiveTvRepository.ensureLoaded()
+            com.nuvio.app.features.livetv.LiveTvRepository.uiState
+        }.collectAsStateWithLifecycle()
+        var liveTvSearchQuery by rememberSaveable { mutableStateOf("") }
+        var liveTvFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+        var liveTvGuideMode by rememberSaveable { mutableStateOf(false) }
 
         val selectedTheme by remember {
             ThemeSettingsRepository.ensureLoaded()
@@ -377,6 +384,13 @@ fun SettingsScreen(
                 if (maxWidth >= 768.dp) {
                     TabletSettingsScreen(
                         page = page,
+                        liveTvUiState = liveTvUiState,
+                        liveTvSearchQuery = liveTvSearchQuery,
+                        onLiveTvSearchQueryChange = { liveTvSearchQuery = it },
+                        liveTvFavoritesOnly = liveTvFavoritesOnly,
+                        onLiveTvFavoritesOnlyChange = { liveTvFavoritesOnly = it },
+                        liveTvGuideMode = liveTvGuideMode,
+                        onLiveTvGuideModeChange = { liveTvGuideMode = it },
                         scrollToTopRequests = scrollToTopRequests,
                         onPageChange = ::openPage,
                         onNavigateBack = ::navigateBack,
@@ -443,6 +457,13 @@ fun SettingsScreen(
                 } else {
                     MobileSettingsScreen(
                         page = page,
+                        liveTvUiState = liveTvUiState,
+                        liveTvSearchQuery = liveTvSearchQuery,
+                        onLiveTvSearchQueryChange = { liveTvSearchQuery = it },
+                        liveTvFavoritesOnly = liveTvFavoritesOnly,
+                        onLiveTvFavoritesOnlyChange = { liveTvFavoritesOnly = it },
+                        liveTvGuideMode = liveTvGuideMode,
+                        onLiveTvGuideModeChange = { liveTvGuideMode = it },
                         scrollToTopRequests = scrollToTopRequests,
                         onPageChange = ::openPage,
                         onNavigateBack = ::navigateBack,
@@ -521,6 +542,13 @@ fun SettingsScreen(
 @Composable
 private fun MobileSettingsScreen(
     page: SettingsPage,
+    liveTvUiState: com.nuvio.app.features.livetv.LiveTvUiState,
+    liveTvSearchQuery: String,
+    onLiveTvSearchQueryChange: (String) -> Unit,
+    liveTvFavoritesOnly: Boolean,
+    onLiveTvFavoritesOnlyChange: (Boolean) -> Unit,
+    liveTvGuideMode: Boolean,
+    onLiveTvGuideModeChange: (Boolean) -> Unit,
     scrollToTopRequests: Flow<Unit>,
     onPageChange: (SettingsPage) -> Unit,
     onNavigateBack: () -> Unit,
@@ -697,6 +725,7 @@ private fun MobileSettingsScreen(
                         settingsRootContent(
                             isTablet = false,
                             onPlaybackClick = { onPageChange(SettingsPage.Playback) },
+                            onLiveTvClick = { onPageChange(SettingsPage.LiveTv) },
                             onAppearanceClick = { onPageChange(SettingsPage.Appearance) },
                             onAdvancedClick = { onPageChange(SettingsPage.Advanced) },
                             onNotificationsClick = { onPageChange(SettingsPage.Notifications) },
@@ -747,6 +776,7 @@ private fun MobileSettingsScreen(
                     useLibass = useLibass,
                     libassRenderType = libassRenderType,
                 )
+                SettingsPage.LiveTv -> liveTvSettingsContent(false, liveTvUiState, liveTvSearchQuery, onLiveTvSearchQueryChange, liveTvFavoritesOnly, onLiveTvFavoritesOnlyChange, liveTvGuideMode, onLiveTvGuideModeChange)
                 SettingsPage.Streams -> streamsSettingsContent(
                     isTablet = false,
                 )
@@ -893,6 +923,13 @@ private fun rememberSettingsRootSearchRevealConnection(
 @Composable
 private fun TabletSettingsScreen(
     page: SettingsPage,
+    liveTvUiState: com.nuvio.app.features.livetv.LiveTvUiState,
+    liveTvSearchQuery: String,
+    onLiveTvSearchQueryChange: (String) -> Unit,
+    liveTvFavoritesOnly: Boolean,
+    onLiveTvFavoritesOnlyChange: (Boolean) -> Unit,
+    liveTvGuideMode: Boolean,
+    onLiveTvGuideModeChange: (Boolean) -> Unit,
     scrollToTopRequests: Flow<Unit>,
     onPageChange: (SettingsPage) -> Unit,
     onNavigateBack: () -> Unit,
@@ -1121,6 +1158,7 @@ private fun TabletSettingsScreen(
                             settingsRootContent(
                                 isTablet = true,
                                 onPlaybackClick = { openInlinePage(SettingsPage.Playback) },
+                                onLiveTvClick = { openInlinePage(SettingsPage.LiveTv) },
                                 onAppearanceClick = { openInlinePage(SettingsPage.Appearance) },
                                 onAdvancedClick = { openInlinePage(SettingsPage.Advanced) },
                                 onNotificationsClick = { openInlinePage(SettingsPage.Notifications) },
@@ -1175,6 +1213,7 @@ private fun TabletSettingsScreen(
                         useLibass = useLibass,
                         libassRenderType = libassRenderType,
                     )
+                    SettingsPage.LiveTv -> liveTvSettingsContent(true, liveTvUiState, liveTvSearchQuery, onLiveTvSearchQueryChange, liveTvFavoritesOnly, onLiveTvFavoritesOnlyChange, liveTvGuideMode, onLiveTvGuideModeChange)
                     SettingsPage.Streams -> streamsSettingsContent(
                         isTablet = true,
                     )

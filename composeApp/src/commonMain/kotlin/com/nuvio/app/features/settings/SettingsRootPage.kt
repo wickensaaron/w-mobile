@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Policy
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
@@ -60,6 +61,8 @@ import nuvio.composeapp.generated.resources.compose_settings_root_advanced_secti
 import nuvio.composeapp.generated.resources.compose_settings_page_content_discovery
 import nuvio.composeapp.generated.resources.compose_settings_page_tracking
 import nuvio.composeapp.generated.resources.settings_playback_subtitle
+import nuvio.composeapp.generated.resources.w_live_tv_title
+import nuvio.composeapp.generated.resources.w_live_tv_description
 import nuvio.composeapp.generated.resources.updates_debug_test_description
 import nuvio.composeapp.generated.resources.updates_debug_test_title
 import nuvio.composeapp.generated.resources.about_supporters_contributors_subtitle
@@ -71,6 +74,7 @@ private const val PRIVACY_POLICY_URL = "https://nuvio.tv/privacy-policy"
 internal fun LazyListScope.settingsRootContent(
     isTablet: Boolean,
     onPlaybackClick: () -> Unit,
+    onLiveTvClick: () -> Unit,
     onAppearanceClick: () -> Unit,
     onAdvancedClick: () -> Unit,
     onNotificationsClick: () -> Unit,
@@ -163,6 +167,14 @@ internal fun LazyListScope.settingsRootContent(
                         icon = Icons.Rounded.PlayArrow,
                         isTablet = isTablet,
                         onClick = onPlaybackClick,
+                    )
+                    SettingsGroupDivider(isTablet = isTablet)
+                    SettingsNavigationRow(
+                        title = stringResource(Res.string.w_live_tv_title),
+                        description = stringResource(Res.string.w_live_tv_description),
+                        icon = Icons.Rounded.LiveTv,
+                        isTablet = isTablet,
+                        onClick = onLiveTvClick,
                     )
                     SettingsGroupDivider(isTablet = isTablet)
                     SettingsNavigationRow(

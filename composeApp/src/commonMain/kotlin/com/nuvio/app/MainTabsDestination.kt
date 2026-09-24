@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,6 +45,7 @@ import nuvio.composeapp.generated.resources.compose_nav_profile
 import nuvio.composeapp.generated.resources.compose_nav_search
 import nuvio.composeapp.generated.resources.sidebar_library
 import nuvio.composeapp.generated.resources.sidebar_search
+import nuvio.composeapp.generated.resources.w_live_tv_title
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -99,6 +101,12 @@ internal fun MainTabsDestination(
                 label = stringResource(Res.string.compose_nav_library),
             ),
             FloatingNavigationItem(
+                selected = selectedTab == AppScreenTab.LiveTv,
+                onClick = { onTabSelected(AppScreenTab.LiveTv) },
+                icon = Icons.Rounded.LiveTv,
+                label = stringResource(Res.string.w_live_tv_title),
+            ),
+            FloatingNavigationItem(
                 selected = selectedTab == AppScreenTab.Settings,
                 onClick = { onTabSelected(AppScreenTab.Settings) },
                 label = stringResource(Res.string.compose_nav_profile),
@@ -141,6 +149,12 @@ internal fun MainTabsDestination(
                             onClick = { onTabSelected(AppScreenTab.Library) },
                             icon = Res.drawable.sidebar_library,
                             contentDescription = stringResource(Res.string.compose_nav_library),
+                        )
+                        NavItem(
+                            selected = selectedTab == AppScreenTab.LiveTv,
+                            onClick = { onTabSelected(AppScreenTab.LiveTv) },
+                            icon = Icons.Rounded.LiveTv,
+                            contentDescription = stringResource(Res.string.w_live_tv_title),
                         )
                         NavItem(
                             selected = selectedTab == AppScreenTab.Settings,

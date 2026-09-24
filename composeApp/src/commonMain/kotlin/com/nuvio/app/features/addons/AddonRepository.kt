@@ -131,7 +131,6 @@ object AddonRepository {
 
             val urls = rowsByUrl.keys.toList()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
-            urls.forEachIndexed { i, u -> log.d { "  server[$i]: $u" } }
 
             val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
             _uiState.value = AddonsUiState(
@@ -154,8 +153,8 @@ object AddonRepository {
             }
             initialized = true
             log.i { "pullFromServer() — applied ${urls.size} addons to state" }
-        }.onFailure { e ->
-            log.e(e) { "pullFromServer() — FAILED" }
+        }.onFailure { error ->
+            log.e { "pullFromServer() — FAILED (${error::class.simpleName})" }
         }
     }
 
@@ -172,7 +171,7 @@ object AddonRepository {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) {
             return AddAddonResult.Error(getString(Res.string.profile_primary_addons_required))
         }
-        log.i { "addAddon() — rawUrl=$rawUrl" }
+        log.i { "addAddon() — requested" }
         val manifestUrl = try {
             normalizeManifestUrl(rawUrl)
         } catch (error: IllegalArgumentException) {
@@ -212,7 +211,7 @@ object AddonRepository {
 
     fun removeAddon(manifestUrl: String) {
         if (isUsingPrimaryAddonsFromSecondaryProfile()) return
-        log.i { "removeAddon() — $manifestUrl" }
+        log.i { "removeAddon() — requested" }
         var changed = false
         _uiState.update { current ->
             val updatedAddons = current.addons.filterNot { it.manifestUrl == manifestUrl }
@@ -367,7 +366,7 @@ object AddonRepository {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                log.e(error) { "pushToServer() — FAILED" }
+                log.e { "pushToServer() — FAILED (${error::class.simpleName})" }
             } finally {
                 if (pushJobsByProfile[profileId] === pushJob) {
                     pushJobsByProfile.remove(profileId)
