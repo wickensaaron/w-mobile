@@ -15,6 +15,19 @@ class WCoreConnectionTest {
         assertNull(pinnedWCoreOrigin("https://user:secret@core.wmedia.example"))
         assertNull(pinnedWCoreOrigin("https://core.wmedia.example?next=https://other.example"))
         assertNull(pinnedWCoreOrigin("https://core.wmedia.example:99999"))
+        assertNull(pinnedWCoreOrigin("https://-core.wmedia.example"))
+        assertNull(pinnedWCoreOrigin("https://core-.wmedia.example"))
+        assertNull(pinnedWCoreOrigin("https://core.wmedia.example#fragment"))
+        assertNull(pinnedWCoreOrigin("https://core.wmedia.example\\other"))
+        assertNull(pinnedWCoreOrigin("https://core.wmedia.example.") )
+        assertNull(pinnedWCoreOrigin(null))
+    }
+
+    @Test
+    fun connectionNeedsBothConfiguredOriginAndAccount() {
+        assertEquals(WCoreConnectionStatus.NotConfigured, idleWCoreStatus(null, null))
+        assertEquals(WCoreConnectionStatus.NotConfigured, idleWCoreStatus(null, "user"))
+        assertEquals(WCoreConnectionStatus.SignInRequired, idleWCoreStatus("https://core.example.com", null))
     }
 
     @Test

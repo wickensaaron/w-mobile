@@ -30,8 +30,7 @@ internal object WCorePlaybackSources {
         episode: Int?,
         preferredAudioLanguage: String?,
     ): PreparedWCorePlaybackRequest? {
-        val origin = WCoreConnectionRepository.currentOrigin() ?: return null
-        val token = WCoreConnectionRepository.currentAccessToken() ?: return null
+        val (origin, token) = WCoreConnectionRepository.currentConnection() ?: return null
         val mediaType = when {
             season != null && episode != null && season >= 0 && episode > 0 -> "episode"
             type.equals("movie", true) || type.equals("film", true) -> "movie"

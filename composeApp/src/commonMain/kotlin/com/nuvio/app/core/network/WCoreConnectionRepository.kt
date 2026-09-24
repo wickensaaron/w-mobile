@@ -39,7 +39,8 @@ sealed interface WCoreConnectionStatus {
 
 /** The W Core access token is short lived and deliberately never written to device storage. */
 object WCoreConnectionRepository {
-    private val origin = pinnedWCoreOrigin(WCoreConfig.BASE_URL)
+    private val defaultOrigin = pinnedWCoreOrigin(WCoreConfig.BASE_URL)
+    private var origin = pinnedWCoreOrigin(WCoreOriginStorage.loadCustomOrigin()) ?: defaultOrigin
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lock = SynchronizedObject()
     private var generation = 0L
@@ -49,13 +50,15 @@ object WCoreConnectionRepository {
     private var coreAccessToken: String? = null
     private var coreExpiresAt: Instant? = null
 
+    private val _configuredOrigin = MutableStateFlow(origin)
+    val configuredOrigin: StateFlow<String?> = _configuredOrigin.asStateFlow()
+
     private val _status = MutableStateFlow<WCoreConnectionStatus>(
-        if (origin == null) WCoreConnectionStatus.NotConfigured else WCoreConnectionStatus.SignInRequired,
+        idleWCoreStatus(origin, userId),
     )
     val status: StateFlow<WCoreConnectionStatus> = _status.asStateFlow()
 
     fun onSupabaseSession(userId: String, accessToken: String) {
-        val configuredOrigin = origin ?: return
         if (userId.isBlank() || accessToken.isBlank()) {
             clear()
             return
@@ -70,10 +73,47 @@ object WCoreConnectionRepository {
             supabaseAccessToken = accessToken
             coreAccessToken = null
             coreExpiresAt = null
-            _status.value = WCoreConnectionStatus.Connecting
-            val currentGeneration = generation
-            exchangeJob = scope.launch { exchangeLoop(configuredOrigin, accessToken, currentGeneration) }
+            connectIfConfiguredLocked()
         }
+    }
+
+    /** Saves a validated HTTPS origin and immediately exchanges a fresh Core token for it. */
+    fun setCustomOrigin(value: String): Boolean {
+        val validated = pinnedWCoreOrigin(value) ?: return false
+        if (!WCoreOriginStorage.saveCustomOrigin(validated)) return false
+        changeOrigin(validated)
+        return true
+    }
+
+    fun useDefaultOrigin(): Boolean {
+        if (!WCoreOriginStorage.clearCustomOrigin()) return false
+        changeOrigin(defaultOrigin)
+        return true
+    }
+
+    private fun changeOrigin(nextOrigin: String?) {
+        synchronized(lock) {
+            generation++
+            exchangeJob?.cancel()
+            exchangeJob = null
+            coreAccessToken = null
+            coreExpiresAt = null
+            origin = nextOrigin
+            _configuredOrigin.value = nextOrigin
+            connectIfConfiguredLocked()
+        }
+    }
+
+    private fun connectIfConfiguredLocked() {
+        val configuredOrigin = origin
+        val accessToken = supabaseAccessToken
+        if (configuredOrigin == null || userId == null || accessToken == null) {
+            _status.value = idleWCoreStatus(configuredOrigin, userId)
+            return
+        }
+        _status.value = WCoreConnectionStatus.Connecting
+        val currentGeneration = generation
+        exchangeJob = scope.launch { exchangeLoop(configuredOrigin, accessToken, currentGeneration) }
     }
 
     fun onProfileChanged() {
@@ -97,7 +137,7 @@ object WCoreConnectionRepository {
             supabaseAccessToken = null
             coreAccessToken = null
             coreExpiresAt = null
-            _status.value = if (origin == null) WCoreConnectionStatus.NotConfigured else WCoreConnectionStatus.SignInRequired
+            _status.value = idleWCoreStatus(origin, userId)
         }
     }
 
@@ -105,7 +145,16 @@ object WCoreConnectionRepository {
         coreAccessToken?.takeIf { coreExpiresAt?.let { expiry -> Clock.System.now() < expiry } == true }
     }
 
-    internal fun currentOrigin(): String? = origin
+    internal fun currentOrigin(): String? = _configuredOrigin.value
+
+    /** Read address and token together so a setting change cannot mix credentials across hosts. */
+    internal fun currentConnection(): Pair<String, String>? = synchronized(lock) {
+        val address = origin ?: return@synchronized null
+        val token = coreAccessToken?.takeIf {
+            coreExpiresAt?.let { expiry -> Clock.System.now() < expiry } == true
+        } ?: return@synchronized null
+        address to token
+    }
 
     private suspend fun exchangeLoop(origin: String, accessToken: String, expectedGeneration: Long) {
         while (currentCoroutineContext().isActive) {
@@ -146,12 +195,18 @@ object WCoreConnectionRepository {
 
 internal data class WCoreSession(val accessToken: String, val expiresAt: Instant)
 
-internal fun pinnedWCoreOrigin(value: String): String? {
+internal fun idleWCoreStatus(origin: String?, userId: String?): WCoreConnectionStatus =
+    if (origin == null) WCoreConnectionStatus.NotConfigured
+    else WCoreConnectionStatus.SignInRequired
+
+internal fun pinnedWCoreOrigin(value: String?): String? {
+    if (value == null) return null
     val candidate = value.trim().trimEnd('/')
     if (candidate.isBlank()) return null
-    val match = Regex("^https://([A-Za-z0-9-]+\\.)+[A-Za-z0-9-]+(?::([0-9]{1,5}))?$").matchEntire(candidate)
+    val label = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    val match = Regex("^https://(?:$label\\.)+$label(?::([0-9]{1,5}))?$").matchEntire(candidate)
         ?: return null
-    val port = match.groupValues[2].toIntOrNull()
+    val port = match.groupValues[1].toIntOrNull()
     if (port != null && port !in 1..65535) return null
     return candidate
 }
