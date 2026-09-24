@@ -21,15 +21,16 @@ object StreamAutoPlaySelector {
             group.addonId.startsWith("debrid:") ||
                 group.streams.any { stream -> stream.isAddonDebridCandidate && stream.isDirectDebridStream }
         }
-        if (installedOrder.isEmpty()) return directDebridEntries + remainingEntries
+        val (wCoreEntries, localEntries) = remainingEntries.partition { it.addonId == W_CORE_ADDON_ID }
+        if (installedOrder.isEmpty()) return wCoreEntries + directDebridEntries + localEntries
 
-        val (addonEntries, pluginEntries) = remainingEntries.partition { group ->
+        val (addonEntries, pluginEntries) = localEntries.partition { group ->
             group.addonName in addonRankByName
         }
         val orderedAddons = addonEntries.sortedBy { group ->
             addonRankByName.getValue(group.addonName)
         }
-        return directDebridEntries + orderedAddons + pluginEntries
+        return wCoreEntries + directDebridEntries + orderedAddons + pluginEntries
     }
 
     fun selectAutoPlayStream(
@@ -83,11 +84,15 @@ object StreamAutoPlaySelector {
         val sourceScopedStreams = when (source) {
             StreamAutoPlaySource.ALL_SOURCES -> streams
             StreamAutoPlaySource.INSTALLED_ADDONS_ONLY -> streams.filter { it.addonName in installedAddonNames }
-            StreamAutoPlaySource.ENABLED_PLUGINS_ONLY -> streams.filter { it.addonName !in installedAddonNames }
+            StreamAutoPlaySource.ENABLED_PLUGINS_ONLY -> streams.filter {
+                it.addonName !in installedAddonNames && !it.addonId.startsWith("$W_CORE_ADDON_ID:")
+            }
         }
         val candidateStreams = sourceScopedStreams.filter { stream ->
             val isAddonStream = stream.addonName in installedAddonNames
-            if (isAddonStream) {
+            if (stream.addonId.startsWith("$W_CORE_ADDON_ID:")) {
+                true
+            } else if (isAddonStream) {
                 selectedAddons.isEmpty() || stream.addonName in selectedAddons
             } else {
                 selectedPlugins.isEmpty() || stream.addonName in selectedPlugins
@@ -252,6 +257,8 @@ object StreamAutoPlaySelector {
         val description = listOfNotNull(parsed?.resolution, parsed?.quality, stream.name,
             stream.title, stream.description).joinToString(" ").lowercase()
         var score = when {
+            stream.addonId == "$W_CORE_ADDON_ID:jellyfin" -> 10_000
+            stream.addonId.startsWith("$W_CORE_ADDON_ID:") -> 5_500
             stream.isDirectDebridStream || stream.isCachedDebridTorrentStream -> 5_000
             stream.playableDirectUrl != null -> 3_000
             else -> 0

@@ -486,7 +486,7 @@ internal fun StreamDestination(
             initialProgressFraction = launch.resumeProgressFraction,
             contentLanguage = resolveLaunchContentLanguage(),
         )
-        if (playerSettings.externalPlayerEnabled) {
+        if (playerSettings.externalPlayerEnabled && !stream.isWCoreStream) {
             openExternalPlayback(playerLaunch)
             StreamsRepository.consumeAutoPlay()
             StreamsRepository.cancelLoading()
@@ -635,7 +635,7 @@ internal fun StreamDestination(
             contentLanguage = resolveLaunchContentLanguage(),
         )
 
-        if (!forceInternal && (forceExternal || playerSettings.externalPlayerEnabled)) {
+        if (!stream.isWCoreStream && !forceInternal && (forceExternal || playerSettings.externalPlayerEnabled)) {
             streamRouteScope.launch {
                 openExternalPlayback(playerLaunch)
                 StreamsRepository.cancelLoading()

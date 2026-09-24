@@ -59,6 +59,11 @@ object StreamLinkCacheRepository {
         streamType: String? = null,
         contentLanguage: String? = null,
     ) {
+        // W Core playback URLs and request headers are short-lived credentials.
+        if (addonId.startsWith("$W_CORE_ADDON_ID:")) {
+            remove(contentKey)
+            return
+        }
         if (url.isNotBlank() && url.hasLikelyExpiringPlaybackCredentials()) {
             remove(contentKey)
             return
@@ -95,6 +100,10 @@ object StreamLinkCacheRepository {
         val entry = runCatching {
             json.decodeFromString(CachedStreamLink.serializer(), raw)
         }.getOrNull() ?: run {
+            StreamLinkCacheStorage.removeEntry(hashedKey(contentKey))
+            return null
+        }
+        if (entry.addonId.startsWith("$W_CORE_ADDON_ID:")) {
             StreamLinkCacheStorage.removeEntry(hashedKey(contentKey))
             return null
         }

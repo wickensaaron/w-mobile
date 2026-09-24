@@ -30,6 +30,7 @@ internal fun List<AddonStreamGroup>.areAutoPlaySourcesLoaded(
     group.isLoading && when (source) {
         StreamAutoPlaySource.ALL_SOURCES -> true
         StreamAutoPlaySource.INSTALLED_ADDONS_ONLY -> group.addonId in installedAddonIds
-        StreamAutoPlaySource.ENABLED_PLUGINS_ONLY -> group.addonId !in installedAddonIds
+        StreamAutoPlaySource.ENABLED_PLUGINS_ONLY ->
+            group.addonId !in installedAddonIds && group.addonId != W_CORE_ADDON_ID
     }
 }

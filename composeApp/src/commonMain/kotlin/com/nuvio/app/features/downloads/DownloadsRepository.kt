@@ -116,6 +116,8 @@ object DownloadsRepository {
         episodeThumbnail: String?,
         stream: StreamItem,
     ): DownloadEnqueueResult {
+        // These URLs and bearer headers expire and must never enter the persisted download queue.
+        if (stream.isWCoreStream) return DownloadEnqueueResult.UnsupportedFormat
         ensureLoaded()
 
         val sourceUrl = stream.playableDirectUrl

@@ -107,6 +107,14 @@ object StreamsRepository {
         val debridSettings = DebridSettingsRepository.snapshot()
         val streamBadgeRules = StreamBadgeSettingsRepository.snapshot()
         val autoPlayMode = playerSettings.streamAutoPlayMode
+        val wCoreRequest = WCorePlaybackSources.prepare(
+            type = type,
+            videoId = videoId,
+            parentMetaId = parentMetaId,
+            season = season,
+            episode = episode,
+            preferredAudioLanguage = playerSettings.preferredAudioLanguage,
+        )
         val isAutoPlayEnabled = !manualSelection && autoPlayMode != StreamAutoPlayMode.MANUAL &&
             !(autoPlayMode == StreamAutoPlayMode.REGEX_MATCH &&
                 !StreamAutoPlayPolicy.isRegexSelectionConfigured(playerSettings.streamAutoPlayRegex))
@@ -169,7 +177,7 @@ object StreamsRepository {
             groupByRepository = pluginUiState.groupStreamsByRepository,
         )
 
-        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
+        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
                 isAnyLoading = false,
@@ -193,7 +201,7 @@ object StreamsRepository {
 
         log.d { "Found ${streamAddons.size} addons for stream type=$type id=$videoId" }
 
-        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
+        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
                 isAnyLoading = false,
@@ -205,7 +213,14 @@ object StreamsRepository {
 
         // Initialise loading placeholders
         val installedAddonOrder = streamAddons.map { it.addonName }
-        val initialGroups = StreamAutoPlaySelector.orderAddonStreams(streamAddons.map { addon ->
+        val initialGroups = StreamAutoPlaySelector.orderAddonStreams((if (wCoreRequest != null) listOf(
+            AddonStreamGroup(
+                addonName = "W Core",
+                addonId = W_CORE_ADDON_ID,
+                streams = emptyList(),
+                isLoading = true,
+            ),
+        ) else emptyList()) + streamAddons.map { addon ->
             AddonStreamGroup(
                 addonName = addon.addonName,
                 addonId = addon.addonId,
@@ -239,7 +254,8 @@ object StreamsRepository {
                 .toMutableMap()
             val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
             val totalTasks = streamAddons.size +
-                pluginProviderGroups.sumOf { it.scrapers.size }
+                pluginProviderGroups.sumOf { it.scrapers.size } +
+                if (wCoreRequest != null) 1 else 0
 
             val installedAddonNames = installedAddonOrder.toSet()
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
@@ -283,8 +299,14 @@ object StreamsRepository {
                 }
             }
 
+            fun isPreferredCoreSourcePending(): Boolean =
+                autoPlayMode == StreamAutoPlayMode.SMART &&
+                    playerSettings.streamAutoPlaySource == StreamAutoPlaySource.ALL_SOURCES &&
+                    _uiState.value.groups.any { it.addonId == W_CORE_ADDON_ID && it.isLoading }
+
             fun updateAutoPlayAfterStreamsChanged() {
                 if (!isDirectAutoPlayFlow || autoSelectTriggered) return
+                if (isPreferredCoreSourcePending()) return
 
                 val earlyEvaluation = when {
                     timeoutElapsed -> evaluateAutoPlay()
@@ -402,7 +424,7 @@ object StreamsRepository {
                         timeoutElapsed = true
                         if (!autoSelectTriggered) {
                             val allStreams = _uiState.value.groups.flatMap { it.streams }
-                            if (allStreams.isNotEmpty()) {
+                            if (allStreams.isNotEmpty() && !isPreferredCoreSourcePending()) {
                                 val evaluation = evaluateAutoPlay()
                                 if (evaluation.stream != null || !evaluation.hasPendingDebridCandidate) {
                                     settleAutoPlay(evaluation)
@@ -458,6 +480,21 @@ object StreamsRepository {
                             )
                         },
                     )
+                    publishCompletion(StreamLoadCompletion.Addon(group))
+                }
+            }
+
+            if (wCoreRequest != null) {
+                launch {
+                    val group = runCatchingUnlessCancelled { WCorePlaybackSources.load(wCoreRequest) }
+                        .getOrElse {
+                            AddonStreamGroup(
+                                addonName = "W Core",
+                                addonId = W_CORE_ADDON_ID,
+                                streams = emptyList(),
+                                error = "W Core sources unavailable",
+                            )
+                        }
                     publishCompletion(StreamLoadCompletion.Addon(group))
                 }
             }

@@ -73,6 +73,9 @@ data class StreamItem(
     val isInstalledAddonStream: Boolean
         get() = addonId.startsWith("addon:")
 
+    val isWCoreStream: Boolean
+        get() = addonId.startsWith("wcore:")
+
     val isTorrentStream: Boolean
         get() = !isDirectDebridStream && (
             !infoHash.isNullOrBlank() ||

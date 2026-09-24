@@ -105,6 +105,8 @@ object WCoreConnectionRepository {
         coreAccessToken?.takeIf { coreExpiresAt?.let { expiry -> Clock.System.now() < expiry } == true }
     }
 
+    internal fun currentOrigin(): String? = origin
+
     private suspend fun exchangeLoop(origin: String, accessToken: String, expectedGeneration: Long) {
         while (currentCoroutineContext().isActive) {
             try {
