@@ -2157,47 +2157,50 @@ private fun ConfiguredMetaSections(
     fun RenderSection(key: MetaScreenSectionKey, showHeader: Boolean = true) {
         when (key) {
             MetaScreenSectionKey.ACTIONS -> {
-                DetailActionButtons(
-                    playLabel = if (isPrimaryPlayEnabled) playButtonLabel else stringResource(Res.string.playback_unavailable),
-                    playEnabled = isPrimaryPlayEnabled,
-                    secondaryActions = buildList {
-                        add(DetailSecondaryAction(
-                            label = if (isWatched) {
-                                stringResource(Res.string.hero_mark_unwatched)
-                            } else {
-                                stringResource(Res.string.hero_mark_watched)
-                            },
-                            icon = if (isWatched) {
-                                Icons.Default.CheckCircle
-                            } else {
-                                Icons.Default.CheckCircleOutline
-                            },
-                            isActive = isWatched,
-                            onClick = onWatchedClick,
-                        ))
-                        add(DetailSecondaryAction(
-                            label = if (isSaved) {
-                                stringResource(Res.string.hero_remove_from_library)
-                            } else {
-                                stringResource(Res.string.hero_add_to_library)
-                            },
-                            icon = if (isSaved) {
-                                Icons.Default.Check
-                            } else {
-                                Icons.Default.Add
-                            },
-                            isActive = isSaved,
-                            onClick = onSaveClick,
-                            onLongClick = onSaveLongClick,
-                        ))
-                    },
-                    isTablet = isTablet,
-                    onPlayClick = onPrimaryPlayClick,
-                    onPlayLongClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
-                    chooseSourceLabel = if (showManualPlayOption && onPrimaryPlayLongClick != null)
-                        stringResource(Res.string.action_choose_source) else null,
-                    onChooseSourceClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    DetailActionButtons(
+                        playLabel = if (isPrimaryPlayEnabled) playButtonLabel else stringResource(Res.string.playback_unavailable),
+                        playEnabled = isPrimaryPlayEnabled,
+                        secondaryActions = buildList {
+                            add(DetailSecondaryAction(
+                                label = if (isWatched) {
+                                    stringResource(Res.string.hero_mark_unwatched)
+                                } else {
+                                    stringResource(Res.string.hero_mark_watched)
+                                },
+                                icon = if (isWatched) {
+                                    Icons.Default.CheckCircle
+                                } else {
+                                    Icons.Default.CheckCircleOutline
+                                },
+                                isActive = isWatched,
+                                onClick = onWatchedClick,
+                            ))
+                            add(DetailSecondaryAction(
+                                label = if (isSaved) {
+                                    stringResource(Res.string.hero_remove_from_library)
+                                } else {
+                                    stringResource(Res.string.hero_add_to_library)
+                                },
+                                icon = if (isSaved) {
+                                    Icons.Default.Check
+                                } else {
+                                    Icons.Default.Add
+                                },
+                                isActive = isSaved,
+                                onClick = onSaveClick,
+                                onLongClick = onSaveLongClick,
+                            ))
+                        },
+                        isTablet = isTablet,
+                        onPlayClick = onPrimaryPlayClick,
+                        onPlayLongClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
+                        chooseSourceLabel = if (showManualPlayOption && onPrimaryPlayLongClick != null)
+                            stringResource(Res.string.action_choose_source) else null,
+                        onChooseSourceClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
+                    )
+                    WCoreAcquisitionAction(meta)
+                }
             }
             MetaScreenSectionKey.OVERVIEW -> {
                 DetailMetaInfo(

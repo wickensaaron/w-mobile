@@ -2360,4 +2360,15 @@
     <string name="compose_player_show_remaining_time">Show remaining time</string>
     <string name="compose_player_brightness">Brightness</string>
     <string name="compose_player_volume">Volume</string>
+    <string name="wcore_add_to_jellyfin">Add to Jellyfin</string>
+    <string name="wcore_available">Available in Jellyfin</string>
+    <string name="wcore_check_failed">Unable to check W Core</string>
+    <string name="wcore_connecting">Checking W Core…</string>
+    <string name="wcore_downloading">Downloading</string>
+    <string name="wcore_failed">Jellyfin request failed</string>
+    <string name="wcore_paused">Jellyfin request paused</string>
+    <string name="wcore_queued">Jellyfin request queued</string>
+    <string name="wcore_retry">Retry</string>
+    <string name="wcore_tmdb_required">A TMDB match is needed to request this title</string>
+    <string name="wcore_unavailable">W Core is unavailable</string>
 </resources>
