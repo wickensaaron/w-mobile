@@ -47,6 +47,9 @@ private data class AddonPushItem(
 )
 
 private const val ADDON_PUSH_DEBOUNCE_MS = 500L
+private const val STARTER_BOOTSTRAP_PENDING = "pending"
+private const val STARTER_BOOTSTRAP_DONE = "done"
+private val STARTER_ADDON_URLS = listOf("https://catalog.nuvio.tv/manifest.json")
 
 object AddonRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -68,6 +71,18 @@ object AddonRepository {
         log.d { "initialize() — loading local addons for profile $currentProfileId" }
 
         val storedUrls = dedupeManifestUrls(AddonStorage.loadInstalledAddonUrls(currentProfileId))
+            .let { saved ->
+                if (AddonStorage.loadStarterBootstrapStatus(currentProfileId) != null) {
+                    saved
+                } else if (saved.isEmpty()) {
+                    AddonStorage.saveInstalledAddonUrls(currentProfileId, STARTER_ADDON_URLS)
+                    AddonStorage.saveStarterBootstrapStatus(currentProfileId, STARTER_BOOTSTRAP_PENDING)
+                    STARTER_ADDON_URLS
+                } else {
+                    AddonStorage.saveStarterBootstrapStatus(currentProfileId, STARTER_BOOTSTRAP_DONE)
+                    saved
+                }
+            }
         val enabledByUrl = loadLocalEnabledStates()
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
         if (storedUrls.isEmpty()) return
@@ -132,6 +147,14 @@ object AddonRepository {
             val urls = rowsByUrl.keys.toList()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
 
+            if (urls.isEmpty() &&
+                AddonStorage.loadStarterBootstrapStatus(currentProfileId) == STARTER_BOOTSTRAP_PENDING
+            ) {
+                initialized = true
+                pushToServer()
+                return@runCatching
+            }
+
             val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
             _uiState.value = AddonsUiState(
                 addons = urls.map { url ->
@@ -144,6 +167,7 @@ object AddonRepository {
                 },
             )
             persist()
+            AddonStorage.saveStarterBootstrapStatus(currentProfileId, STARTER_BOOTSTRAP_DONE)
             urls.forEach { url ->
                 val existing = existingByUrl[url]
                 val addon = _uiState.value.addons.firstOrNull { it.manifestUrl == url }
@@ -362,6 +386,7 @@ object AddonRepository {
                     putSyncOriginClientId()
                 }
                 SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
+                AddonStorage.saveStarterBootstrapStatus(profileId, STARTER_BOOTSTRAP_DONE)
                 log.d { "pushToServer() — success" }
             } catch (error: CancellationException) {
                 throw error

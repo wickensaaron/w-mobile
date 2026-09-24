@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit
 
 actual object AddonStorage {
     private const val preferencesName = "nuvio_addons"
+    private const val starterBootstrapKey = "starter_bootstrap_status"
     private const val addonUrlsKey = "installed_manifest_urls"
     private const val addonEnabledStatesKey = "installed_manifest_enabled_states"
 
@@ -36,6 +37,13 @@ actual object AddonStorage {
 
     fun initialize(context: Context) {
         preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+    }
+
+    actual fun loadStarterBootstrapStatus(profileId: Int): String? =
+        preferences?.getString("${starterBootstrapKey}_$profileId", null)
+
+    actual fun saveStarterBootstrapStatus(profileId: Int, status: String) {
+        preferences?.edit()?.putString("${starterBootstrapKey}_$profileId", status)?.apply()
     }
 
     actual fun loadInstalledAddonUrls(profileId: Int): List<String> =

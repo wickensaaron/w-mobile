@@ -24,8 +24,16 @@ import org.jetbrains.compose.resources.getString
 import platform.Foundation.NSUserDefaults
 
 actual object AddonStorage {
+    private const val starterBootstrapKey = "starter_bootstrap_status"
     private const val addonUrlsKey = "installed_manifest_urls"
     private const val addonEnabledStatesKey = "installed_manifest_enabled_states"
+
+    actual fun loadStarterBootstrapStatus(profileId: Int): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey("${starterBootstrapKey}_$profileId")
+
+    actual fun saveStarterBootstrapStatus(profileId: Int, status: String) {
+        NSUserDefaults.standardUserDefaults.setObject(status, forKey = "${starterBootstrapKey}_$profileId")
+    }
 
     actual fun loadInstalledAddonUrls(profileId: Int): List<String> =
         NSUserDefaults.standardUserDefaults
