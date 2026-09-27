@@ -46,6 +46,7 @@ data class PlayerLaunch(
     val initialPositionMs: Long = 0L,
     val initialProgressFraction: Float? = null,
     val contentLanguage: String? = null,
+    val coreSelectionReference: String? = null,
 )
 
 object PlayerLaunchStore {
@@ -214,6 +215,7 @@ internal data class PlaybackKey(
     val videoId: String?,
     val seasonNumber: Int?,
     val episodeNumber: Int?,
+    val reloadGeneration: Long = 0L,
 )
 
 data class PlayerPlaybackSnapshot(

@@ -28,6 +28,10 @@ internal fun PlayerScreenRuntime.updatePlaybackSnapshot(
     if (playbackKey != activePlaybackKey) return false
     playbackSnapshot = snapshot
     playbackSnapshotKey = playbackKey
+    if (snapshot.isPlaying && !snapshot.isLoading && coreRecoveryResumePositionMs?.let { snapshot.positionMs >= it + 1_000L } == true) {
+        coreRecoveryAttemptedReference = null
+        coreRecoveryResumePositionMs = null
+    }
     val targetPositionMs = scrubbingPositionMs ?: return true
     if (!isScrubbingTimeline && (
             !snapshot.isLoading || snapshot.isEnded ||
@@ -50,6 +54,7 @@ internal val PlayerScreenRuntime.activePlaybackKey: PlaybackKey
         videoId = activeVideoId,
         seasonNumber = activeSeasonNumber,
         episodeNumber = activeEpisodeNumber,
+        reloadGeneration = corePlaybackReloadGeneration,
     )
 
 internal val PlayerScreenRuntime.playbackSession: WatchProgressPlaybackSession
@@ -84,7 +89,8 @@ internal fun PlayerScreenRuntime.resetIdentityStateIfNeeded() {
     val identity = activePlaybackKey
     if (lastResetPlaybackIdentity != identity) {
         lastResetPlaybackIdentity = identity
-        shouldPlay = true
+        shouldPlay = pendingCorePlaybackReset?.takeIf { it.playbackKey == identity }?.shouldPlay ?: true
+        pendingCorePlaybackReset = null
         initialLoadCompleted = false
         speedBoostRestoreSpeed = null
         isHoldToSpeedGestureActive = false

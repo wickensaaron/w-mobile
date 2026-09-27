@@ -19,6 +19,13 @@ import com.nuvio.app.features.streams.InstalledStreamAddonTarget
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamBadgePresentation
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
+import com.nuvio.app.features.streams.WCorePlaybackSources
+import com.nuvio.app.features.streams.W_CORE_ADDON_ID
+import com.nuvio.app.core.network.WCoreNativeLibrary
+import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLoadCompletion
 import com.nuvio.app.features.streams.StreamParser
@@ -39,6 +46,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.getString
 
@@ -68,6 +76,7 @@ object PlayerStreamsRepository {
         season: Int? = null,
         episode: Int? = null,
         forceRefresh: Boolean = false,
+        parentMetaId: String? = null,
     ) {
         fetchStreams(
             type = type,
@@ -75,6 +84,7 @@ object PlayerStreamsRepository {
             season = season,
             episode = episode,
             forceRefresh = forceRefresh,
+            parentMetaId = parentMetaId,
             stateFlow = _sourceState,
             requestKeyHolder = { sourceRequestKey },
             setRequestKey = { sourceRequestKey = it },
@@ -89,6 +99,7 @@ object PlayerStreamsRepository {
         season: Int? = null,
         episode: Int? = null,
         forceRefresh: Boolean = false,
+        parentMetaId: String? = null,
     ) {
         fetchStreams(
             type = type,
@@ -96,6 +107,7 @@ object PlayerStreamsRepository {
             season = season,
             episode = episode,
             forceRefresh = forceRefresh,
+            parentMetaId = parentMetaId,
             stateFlow = _episodeStreamsState,
             requestKeyHolder = { episodeStreamsRequestKey },
             setRequestKey = { episodeStreamsRequestKey = it },
@@ -174,6 +186,7 @@ object PlayerStreamsRepository {
         season: Int?,
         episode: Int?,
         forceRefresh: Boolean,
+        parentMetaId: String?,
         stateFlow: MutableStateFlow<StreamsUiState>,
         requestKeyHolder: () -> String?,
         setRequestKey: (String?) -> Unit,
@@ -186,12 +199,15 @@ object PlayerStreamsRepository {
         } else {
             PluginsUiState(pluginsEnabled = false)
         }
-        val requestKey = "$type::$videoId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
+        val account = currentNuvioSyncIdentity()
+        val profile = ProfileRepository.activeProfileId
+        val requestKey = "$type::$videoId::$parentMetaId::$season::$episode::pluginsGrouped=${pluginUiState.groupStreamsByRepository}::core=${WCorePlaybackSources.cacheScope()}"
         PluginRepository.setLocalPluginSearchPaused(false)
         val current = stateFlow.value
         if (
             !forceRefresh &&
             requestKeyHolder() == requestKey &&
+            isCorePlayerCacheReusable(current.groups, WCorePlaybackSources::isSelectionCurrent) &&
             (current.groups.isNotEmpty() || current.emptyStateReason != null || current.isAnyLoading)
         ) {
             return
@@ -226,6 +242,7 @@ object PlayerStreamsRepository {
         val installedAddons = AddonRepository.uiState.value.addons.enabledAddons()
         PlayerSettingsRepository.ensureLoaded()
         val playerSettings = PlayerSettingsRepository.uiState.value
+        val coreRequest = WCorePlaybackSources.prepare(type, videoId, parentMetaId, season, episode, playerSettings.preferredAudioLanguage)
         val debridSettings = DebridSettingsRepository.snapshot()
         val pluginScrapers = if (AppFeaturePolicy.pluginsEnabled) {
             PluginRepository.getEnabledScrapersForType(type)
@@ -237,7 +254,7 @@ object PlayerStreamsRepository {
             groupByRepository = pluginUiState.groupStreamsByRepository,
         )
 
-        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
+        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty() && coreRequest == null) {
             stateFlow.value = StreamsUiState(
                 isAnyLoading = false,
                 emptyStateReason = com.nuvio.app.features.streams.StreamsEmptyStateReason.NoAddonsInstalled,
@@ -263,7 +280,7 @@ object PlayerStreamsRepository {
                 )
             }
 
-        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty()) {
+        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty() && coreRequest == null) {
             stateFlow.value = StreamsUiState(
                 isAnyLoading = false,
                 emptyStateReason = com.nuvio.app.features.streams.StreamsEmptyStateReason.NoCompatibleAddons,
@@ -272,7 +289,9 @@ object PlayerStreamsRepository {
         }
 
         val installedAddonOrder = streamAddons.map { it.addonName }
-        val initialGroups = StreamAutoPlaySelector.orderAddonStreams(streamAddons.map { addon ->
+        val initialGroups = StreamAutoPlaySelector.orderAddonStreams((if (coreRequest != null) listOf(
+            AddonStreamGroup("W Core", W_CORE_ADDON_ID, emptyList(), isLoading = true),
+        ) else emptyList()) + streamAddons.map { addon ->
             AddonStreamGroup(
                 addonName = addon.addonName,
                 addonId = addon.addonId,
@@ -295,13 +314,14 @@ object PlayerStreamsRepository {
         )
 
         val job = scope.launch {
+            fun isCurrentRequest() = requestKeyHolder() == requestKey && ProfileRepository.activeProfileId == profile && currentNuvioSyncIdentity() == account
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
             val installedAddonNames = installedAddonOrder.toSet()
             val pluginRemainingByAddonId = pluginProviderGroups
                 .associate { it.addonId to it.scrapers.size }
                 .toMutableMap()
             val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
-            val totalTasks = streamAddons.size + pluginProviderGroups.sumOf { it.scrapers.size }
+            val totalTasks = streamAddons.size + pluginProviderGroups.sumOf { it.scrapers.size } + if (coreRequest != null) 1 else 0
             val completions = Channel<StreamLoadCompletion>(capacity = Channel.BUFFERED)
             val debridAvailabilityJobs = mutableListOf<Job>()
 
@@ -323,6 +343,8 @@ object PlayerStreamsRepository {
             }
 
             fun publishStreamGroup(group: AddonStreamGroup) {
+                if (!isCurrentRequest()) return
+                if (group.addonId == W_CORE_ADDON_ID && coreRequest != null && !WCoreNativeLibrary.isOwnerCurrent(coreRequest.owner)) return
                 stateFlow.update { current ->
                     val updated = StreamAutoPlaySelector.orderAddonStreams(
                         groups = current.groups.map { currentGroup ->
@@ -404,6 +426,16 @@ object PlayerStreamsRepository {
                 }
             }
 
+            if (coreRequest != null) launch {
+                val group = runCatchingUnlessCancelled {
+                    withTimeoutOrNull(15_000) { WCorePlaybackSources.load(coreRequest) }
+                        ?: AddonStreamGroup("W Core", W_CORE_ADDON_ID, emptyList(), error = "W Core sources unavailable")
+                }.getOrElse {
+                    AddonStreamGroup("W Core", W_CORE_ADDON_ID, emptyList(), error = "W Core sources unavailable")
+                }
+                publishCompletion(StreamLoadCompletion.Addon(group))
+            }
+
             pluginProviderGroups.forEach { providerGroup ->
                 val includeScraperNameInSubtitle = false
                 providerGroup.scrapers.forEach { scraper ->
@@ -448,7 +480,10 @@ object PlayerStreamsRepository {
             }
 
             repeat(totalTasks) {
-                when (val completion = completions.receive()) {
+                val completion = completions.receive()
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentRequest()) return@launch
+                when (completion) {
                     is StreamLoadCompletion.Addon -> {
                         publishStreamGroupAfterCacheCheck(completion.group)
                     }
@@ -510,6 +545,7 @@ object PlayerStreamsRepository {
                     playerSettings = playerSettings,
                     installedAddonNames = installedAddonNames,
                 ) { original, prepared ->
+                    if (!isCurrentRequest()) return@prepare
                     stateFlow.update { current ->
                         current.copy(
                             groups = DirectDebridStreamPreparer.replacePreparedStream(
@@ -555,3 +591,9 @@ private fun StreamsUiState.streamDiagnostics(): String {
 private fun com.nuvio.app.features.addons.ManagedAddon.streamAddonInstanceId(manifestId: String): String =
     "addon:$manifestId:$manifestUrl"
 
+
+
+internal fun isCorePlayerCacheReusable(groups: List<AddonStreamGroup>, isCurrent: (String?) -> Boolean): Boolean =
+    groups.filter { it.addonId == W_CORE_ADDON_ID }.all { group ->
+        group.error == null && group.streams.all { isCurrent(it.coreSelectionReference ?: it.url) }
+    }

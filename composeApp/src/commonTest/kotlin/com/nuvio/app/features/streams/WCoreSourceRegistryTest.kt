@@ -44,6 +44,28 @@ class WCoreSourceRegistryTest {
         assertNull(registry.find(last))
     }
 
+    @Test fun activePlayerPinSurvivesPickerEvictionAndReleaseDropsIt() {
+        val registry = WCoreSourceRegistry()
+        val first = registry.remember(listOf(stream), response, request).single()
+        registry.pin(first.coreSelectionReference)
+        repeat(50) { registry.remember(listOf(stream), response, request) }
+        assertNotNull(registry.find(first))
+        val realPlayback = first.copy(url = "https://core.example/api/v1/playback/stream/fresh-ticket")
+        assertNotNull(registry.find(realPlayback))
+        assertNull(registry.find(realPlayback.copy(sourceName = "substituted-source")))
+        registry.release(first.coreSelectionReference)
+        assertNull(registry.find(first))
+    }
+
+    @Test fun refreshedExpiryReplacesOriginalExpiryWithoutRetainingTickets() {
+        val registry = WCoreSourceRegistry()
+        val first = registry.remember(listOf(stream), response, request).single()
+        registry.pin(first.coreSelectionReference)
+        registry.updateExpiry(first.coreSelectionReference, """{"sourceId":"jellyfin:item/one","expiresAt":"2099-01-01T00:00:00Z","playbackUrl":"signed-secret"}""", "jellyfin:item/one")
+        assertEquals(kotlin.time.Instant.parse("2099-01-01T00:00:00Z"), registry.find(first)!!.expiresAt)
+        assertFalse(registry.find(first).toString().contains("signed-secret"))
+    }
+
     @Test fun refreshNeverSubstitutesAnotherSourceOrProvider() {
         val other = stream.copy(sourceName = "jellyfin:other")
         assertNull(exactWCoreRefreshedSource(listOf(other), stream.sourceName!!, stream.addonId))

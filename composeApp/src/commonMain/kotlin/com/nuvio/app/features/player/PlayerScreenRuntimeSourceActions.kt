@@ -188,6 +188,7 @@ internal fun PlayerScreenRuntime.switchToP2pSourceStream(stream: StreamItem) {
     activeStreamSubtitle = stream.streamSubtitle
     activeProviderName = stream.addonName
     activeProviderAddonId = stream.addonId
+    setCoreSelection(stream.coreSelectionReference.takeIf { stream.isWCoreStream })
     currentStreamBingeGroup = stream.behaviorHints.bingeGroup
     activeInitialPositionMs = currentPositionMs
     activeInitialProgressFraction = null
@@ -231,7 +232,8 @@ internal fun PlayerScreenRuntime.switchToP2pEpisodeStream(
     applyEpisodeStreamMetadata(stream, episode, resume)
 }
 
-internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem) {
+internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem, coreRefreshed: Boolean = false) {
+    if (!coreRefreshed && resolveCoreForPlayer(stream) { switchToSource(it, coreRefreshed = true) }) return
     if (
         resolveDebridForPlayer(
             stream = stream,
@@ -242,6 +244,7 @@ internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem) {
                 val vid = activeVideoId
                 if (vid != null) {
                     PlayerStreamsRepository.loadSources(
+                        parentMetaId = parentMetaId,
                         type = contentType ?: parentMetaType,
                         videoId = vid,
                         season = activeSeasonNumber,
@@ -259,7 +262,7 @@ internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem) {
     if (openExternalSourceUrl(stream)) return
     val url = stream.playableDirectUrl ?: return
     val sourceIdentityKey = stream.playerSourceIdentityKey()
-    if (url == activeSourceUrl) {
+    if (url == activeSourceUrl && !stream.isWCoreStream) {
         activeSourceIdentityKey = sourceIdentityKey ?: activeSourceIdentityKey
         return
     }
@@ -281,23 +284,32 @@ internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem) {
     activeStreamSubtitle = stream.streamSubtitle
     activeProviderName = stream.addonName
     activeProviderAddonId = stream.addonId
+    setCoreSelection(stream.coreSelectionReference.takeIf { stream.isWCoreStream })
     currentStreamBingeGroup = stream.behaviorHints.bingeGroup
     activeInitialPositionMs = currentPositionMs
     activeInitialProgressFraction = null
+    if (stream.isWCoreStream) scheduleCorePlaybackReset(shouldPlay)
     showSourcesPanel = false
     controlsVisible = true
     PlayerStreamsRepository.pauseSearchForPlayback()
 }
 
-internal fun PlayerScreenRuntime.switchToEpisodeStream(stream: StreamItem, episode: MetaVideo) {
+internal fun PlayerScreenRuntime.switchToEpisodeStream(
+    stream: StreamItem, episode: MetaVideo, coreRefreshed: Boolean = false, isRequestCurrent: () -> Boolean = { true },
+) {
+    if (!isRequestCurrent()) return
+    if (!coreRefreshed && resolveCoreForPlayer(stream, isRequestCurrent) {
+        switchToEpisodeStream(it, episode, coreRefreshed = true, isRequestCurrent = isRequestCurrent)
+    }) return
     if (
         resolveDebridForPlayer(
             stream = stream,
             season = episode.season,
             episode = episode.episode,
-            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode) },
+            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode, isRequestCurrent = isRequestCurrent) },
             onStale = {
                 PlayerStreamsRepository.loadEpisodeStreams(
+                    parentMetaId = parentMetaId,
                     type = contentType ?: parentMetaType,
                     videoId = episode.id,
                     season = episode.season,
@@ -368,6 +380,7 @@ internal fun PlayerScreenRuntime.switchToDownloadedEpisode(downloadItem: Downloa
     activeStreamSubtitle = downloadItem.streamSubtitle
     activeProviderName = downloadItem.providerName.ifBlank { downloadedLabel }
     activeProviderAddonId = downloadItem.providerAddonId
+    setCoreSelection(null)
     currentStreamBingeGroup = null
     activeSeasonNumber = episode.season
     activeEpisodeNumber = episode.episode
@@ -406,7 +419,7 @@ internal fun PlayerScreenRuntime.playNextEpisode(automatic: Boolean = false) {
             if (isCurrentRequest()) switchToDownloadedEpisode(item, episode)
         },
         onEpisodeStreamSelected = { stream, episode ->
-            if (isCurrentRequest()) switchToEpisodeStream(stream, episode)
+            if (isCurrentRequest()) switchToEpisodeStream(stream, episode, isRequestCurrent = ::isCurrentRequest)
         },
         onManualSelectionRequired = { nextVideo ->
             if (isCurrentRequest()) {
@@ -438,6 +451,7 @@ internal fun PlayerScreenRuntime.playNextEpisode(automatic: Boolean = false) {
 internal fun PlayerScreenRuntime.openSourcesPanel() {
     val vid = activeVideoId ?: return
     PlayerStreamsRepository.loadSources(
+        parentMetaId = parentMetaId,
         type = contentType ?: parentMetaType,
         videoId = vid,
         season = activeSeasonNumber,
@@ -500,6 +514,7 @@ private fun PlayerScreenRuntime.applyEpisodeStreamMetadata(
     activeStreamSubtitle = stream.streamSubtitle
     activeProviderName = stream.addonName
     activeProviderAddonId = stream.addonId
+    setCoreSelection(stream.coreSelectionReference.takeIf { stream.isWCoreStream })
     currentStreamBingeGroup = stream.behaviorHints.bingeGroup
     activeSeasonNumber = episode.season
     activeEpisodeNumber = episode.episode

@@ -29,6 +29,8 @@ data class StreamItem(
     val clientResolve: StreamClientResolve? = null,
     val debridCacheStatus: StreamDebridCacheStatus? = null,
     val externalSubtitles: List<StreamSubtitle> = emptyList(),
+    /** Process-only exact Core selection identity; never serialized or synced. */
+    val coreSelectionReference: String? = null,
     val badges: List<StreamBadge> = emptyList(),
 ) {
     val streamLabel: String

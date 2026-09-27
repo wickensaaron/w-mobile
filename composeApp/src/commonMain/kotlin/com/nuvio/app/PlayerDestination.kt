@@ -72,6 +72,7 @@ internal fun PlayerDestination(
         initialPositionMs = launch.initialPositionMs,
         initialProgressFraction = launch.initialProgressFraction,
         contentLanguage = launch.contentLanguage,
+        coreSelectionReference = launch.coreSelectionReference,
         onBack = onBack,
         onOpenInExternalPlayer = { request ->
             val playerLaunch = PlayerLaunch(

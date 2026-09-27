@@ -97,6 +97,14 @@ internal class PlayerScreenRuntime(
     var controlsVisible by mutableStateOf(false)
     var showRemainingTime by mutableStateOf(false)
     var playerControlsLocked by mutableStateOf(false)
+    var activeCoreSelectionReference by mutableStateOf(args.coreSelectionReference)
+    var coreSourceSwitchJob: Job? = null
+    var coreSourceRequestGeneration = 0L
+    var coreRecoveryAttemptedReference: String? = null
+    var coreRecoveryResumePositionMs: Long? = null
+    var corePlaybackReloadGeneration by mutableStateOf(0L)
+    var pendingCorePlaybackReset: CorePlaybackResetPreference? = null
+    init { com.nuvio.app.features.streams.WCorePlaybackSources.pinSelection(args.coreSelectionReference) }
     var activeSourceUrl by mutableStateOf(sourceUrl)
     var activeSourceAudioUrl by mutableStateOf(sourceAudioUrl)
     var activeSourceHeaders by mutableStateOf(sanitizePlaybackHeaders(sourceHeaders))

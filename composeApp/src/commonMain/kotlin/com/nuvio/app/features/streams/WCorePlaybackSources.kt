@@ -46,6 +46,17 @@ internal fun canonicalCorePlaybackBody(videoId: String, preferredAudioLanguage: 
 internal object WCorePlaybackSources {
     private val selections = WCoreSourceRegistry()
     fun clearRefreshState() = selections.clear()
+    fun pinSelection(reference: String?) = selections.pin(reference)
+    fun releaseSelection(reference: String?) = selections.release(reference)
+    fun isSelectionCurrent(reference: String?): Boolean = selections.find(reference)?.let { WCoreNativeLibrary.isOwnerCurrent(it.owner) } == true
+    fun shouldRecover(reference: String?, message: String?): Boolean = selections.find(reference)?.let {
+        shouldRecoverWCorePlayerSource(it.expiresAt, message)
+    } == true
+    suspend fun refreshReference(reference: String): StreamItem? {
+        val selection = selections.find(reference) ?: return null
+        return refreshSelected(StreamItem(url = reference, coreSelectionReference = reference, sourceName = selection.sourceId,
+            addonId = selection.addonId, addonName = "W Core"))
+    }
     fun cacheScope(): String = WCoreNativeLibrary.currentScope()?.let { "${it.account}|${it.profileId}|${it.origin}|${it.revision}" } ?: "disconnected"
 
     fun prepare(
@@ -178,7 +189,8 @@ internal object WCorePlaybackSources {
                 if (response.status !in 200..299) return@withTimeoutOrNull null
                 val refreshed = exactWCoreRefreshedSource(parseWCorePlaybackSources(response.body, session.origin, session.token), selection.sourceId, selection.addonId)
                 currentCoroutineContext().ensureActive(); fenced()
-                refreshed
+                if (refreshed != null) selections.updateExpiry(stream.coreSelectionReference ?: stream.url, response.body, selection.sourceId)
+                refreshed?.copy(coreSelectionReference = stream.coreSelectionReference ?: stream.url)
             }
         } catch (cancelled: CancellationException) { throw cancelled }
           catch (_: Exception) { null }
@@ -254,16 +266,32 @@ private fun safeWCorePlaybackUrl(raw: String, origin: String): String? {
 }
 
 
-internal data class WCoreSourceSelection(val owner: WCoreLibraryOwner, val body: String, val sourceId: String, val addonId: String)
+internal data class WCoreSourceSelection(val owner: WCoreLibraryOwner, val body: String, val sourceId: String, val addonId: String, val expiresAt: kotlin.time.Instant? = null)
 
 /** Bounded process-only identities; picker state contains no signed URL, bearer, or subtitle ticket. */
 internal class WCoreSourceRegistry {
     private val lock = SynchronizedObject()
     private val entries = LinkedHashMap<String, WCoreSourceSelection>()
     private var sequence = 0L
-    fun clear() = synchronized(lock) { entries.clear() }
+    private val pinned = LinkedHashMap<String, WCoreSourceSelection>()
+    fun clear() = synchronized(lock) { entries.clear(); pinned.clear() }
+    fun find(reference: String?): WCoreSourceSelection? = synchronized(lock) { pinned[reference] ?: entries[reference] }
+    fun pin(reference: String?) = synchronized(lock) {
+        if (reference != null) entries[reference]?.let { pinned[reference] = it }
+        while (pinned.size > 4) pinned.remove(pinned.keys.first())
+    }
+    fun release(reference: String?) = synchronized(lock) { pinned.remove(reference) }
+    fun updateExpiry(reference: String?, response: String, sourceId: String) {
+        val root = runCatching { Json.parseToJsonElement(response) as? JsonObject }.getOrNull() ?: return
+        val source = (root["sources"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>().firstOrNull { it.text("sourceId") == sourceId } ?: root
+        val expiry = source.text("expiresAt")?.let { runCatching { kotlin.time.Instant.parse(it) }.getOrNull() }
+        synchronized(lock) {
+            entries[reference]?.takeIf { it.sourceId == sourceId }?.let { entries[reference!!] = it.copy(expiresAt = expiry) }
+            pinned[reference]?.takeIf { it.sourceId == sourceId }?.let { pinned[reference!!] = it.copy(expiresAt = expiry) }
+        }
+    }
     fun find(stream: StreamItem): WCoreSourceSelection? = synchronized(lock) {
-        entries[stream.url]?.takeIf { it.sourceId == stream.sourceName && it.addonId == stream.addonId }
+        (pinned[stream.coreSelectionReference ?: stream.url] ?: entries[stream.coreSelectionReference ?: stream.url])?.takeIf { it.sourceId == stream.sourceName && it.addonId == stream.addonId }
     }
     fun remember(streams: List<StreamItem>, response: String, request: PreparedWCorePlaybackRequest): List<StreamItem> {
         val root = runCatching { Json.parseToJsonElement(response) as? JsonObject }.getOrNull() ?: return emptyList()
@@ -272,9 +300,11 @@ internal class WCoreSourceRegistry {
             streams.mapNotNull { stream ->
                 val id = stream.sourceName ?: return@mapNotNull null
                 val reference = "wcore-source://${++sequence}"
-                entries[reference] = WCoreSourceSelection(request.owner.owner, body, id, stream.addonId)
+                val source = (root["sources"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>().firstOrNull { it.text("sourceId") == id } ?: root
+                val expiry = source.text("expiresAt")?.let { runCatching { kotlin.time.Instant.parse(it) }.getOrNull() }
+                entries[reference] = WCoreSourceSelection(request.owner.owner, body, id, stream.addonId, expiry)
                 while (entries.size > 40) entries.remove(entries.keys.first())
-                stream.copy(url = reference, externalSubtitles = emptyList(), behaviorHints = stream.behaviorHints.copy(proxyHeaders = null))
+                stream.copy(url = reference, coreSelectionReference = reference, externalSubtitles = emptyList(), behaviorHints = stream.behaviorHints.copy(proxyHeaders = null))
             }
         }
     }
@@ -306,3 +336,9 @@ internal suspend fun <T> requestInWCorePlaybackScope(isCurrent: () -> Boolean, r
     check(isCurrent()) { "W Core connection changed" }
     return result
 }
+
+
+internal fun shouldRecoverWCorePlayerSource(expiry: kotlin.time.Instant?, message: String?, now: kotlin.time.Instant = kotlin.time.Clock.System.now()): Boolean =
+    expiry?.let { it <= now } == true || message?.let {
+        Regex("\\b(401|403|410)\\b|expired|connection reset|connection closed|network.*error", RegexOption.IGNORE_CASE).containsMatchIn(it)
+    } == true

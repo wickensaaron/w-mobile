@@ -12,6 +12,7 @@ import com.nuvio.app.features.downloads.DownloadItem
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.player.skip.NextEpisodeInfo
 import com.nuvio.app.features.player.skip.PlayerNextEpisodeRules
+import com.nuvio.app.features.streams.W_CORE_ADDON_ID
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamAutoPlaySource
@@ -131,6 +132,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
 
     return launch {
         PlayerStreamsRepository.loadEpisodeStreams(
+            parentMetaId = parentMetaId,
             type = type,
             videoId = nextVideo.id,
             season = nextVideo.season,
@@ -173,7 +175,12 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             settleAutoSelect()
         }
 
+        fun isPreferredCoreSourcePending(): Boolean = effectiveMode == StreamAutoPlayMode.SMART &&
+            effectiveSource == StreamAutoPlaySource.ALL_SOURCES &&
+            PlayerStreamsRepository.episodeStreamsState.value.groups.any { it.addonId == W_CORE_ADDON_ID && it.isLoading }
+
         fun trySelectStream(streams: List<StreamItem>): StreamItem? =
+            if (isPreferredCoreSourcePending()) null else
             StreamAutoPlaySelector.selectAutoPlayStream(
                 streams = streams,
                 mode = effectiveMode,
@@ -191,7 +198,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             )
 
         fun tryBingeGroupOnly(streams: List<StreamItem>): StreamItem? {
-            if (preferredBingeGroup == null || !settings.streamAutoPlayPreferBingeGroup) return null
+            if (preferredBingeGroup == null || !settings.streamAutoPlayPreferBingeGroup || isPreferredCoreSourcePending()) return null
             return StreamAutoPlaySelector.selectAutoPlayStream(
                 streams = streams,
                 mode = effectiveMode,
@@ -265,7 +272,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             }
             if (selectedStream != null) {
                 innerJob.cancel()
-            } else if (PlayerStreamsRepository.episodeStreamsState.value.groups.flatMap { it.streams }.isNotEmpty()) {
+            } else if (!isPreferredCoreSourcePending() && PlayerStreamsRepository.episodeStreamsState.value.groups.flatMap { it.streams }.isNotEmpty()) {
                 innerJob.cancel()
                 finishWithoutSelection()
             } else {
@@ -304,6 +311,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 else -> {
                     result.toastMessage()?.let { NuvioToastController.show(it) }
                     PlayerStreamsRepository.loadEpisodeStreams(
+                        parentMetaId = parentMetaId,
                         type = type,
                         videoId = nextVideo.id,
                         season = nextVideo.season,

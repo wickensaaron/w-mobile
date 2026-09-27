@@ -250,9 +250,9 @@ private fun p2pConnectingPhaseLabel(phase: String): String = when (phase) {
     )
 }
 
-private fun PlayerScreenRuntime.currentInitialPositionRequestKey(): String? {
+internal fun PlayerScreenRuntime.currentInitialPositionRequestKey(): String? {
     val positionMs = activeInitialPositionMs.takeIf { it > 0L } ?: return null
-    return "$activePlaybackIdentity:${activeVideoId.orEmpty()}:$positionMs"
+    return "$activePlaybackKey:${activeVideoId.orEmpty()}:$positionMs"
 }
 
 @Composable
@@ -317,8 +317,9 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             },
             onSourcesClick = if (activeVideoId != null) { { openSourcesPanel() } } else null,
             onEpisodesClick = if (isSeries) { { openEpisodesPanel() } } else null,
-            onOpenInExternalPlayer = args.onOpenInExternalPlayer?.let { openExternal ->
-                {
+            onOpenInExternalPlayer = args.onOpenInExternalPlayer?.takeUnless { activeProviderAddonId?.startsWith("wcore:") == true }?.let { openExternal ->
+                externalPlayback@{
+                    if (activeCoreSelectionReference != null || activeProviderAddonId?.startsWith("wcore:") == true) return@externalPlayback
                     val loadedSubtitles = addonSubtitles
                         .takeIf { it.isNotEmpty() }
                         ?.map { sub ->

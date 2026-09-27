@@ -350,6 +350,10 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     DisposableEffect(Unit) {
         PlayerStreamsRepository.pauseSearchForPlayback()
         onDispose {
+            coreSourceRequestGeneration++
+            coreSourceSwitchJob?.cancel()
+            credentialRefreshJob?.cancel()
+            com.nuvio.app.features.streams.WCorePlaybackSources.releaseSelection(activeCoreSelectionReference)
             playerController?.clearNowPlayingInfo()
             P2pStreamingEngine.shutdown()
             PlayerStreamsRepository.clearAll()
@@ -691,6 +695,7 @@ internal fun PlayerScreenRuntime.removeFailedStreamFromCache() {
 }
 
 internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message: String?): Boolean {
+    if (activeProviderAddonId?.startsWith("wcore:") == true) return tryRefreshCoreSourceAfterError(message)
     val failedUrl = activeSourceUrl
     if (!failedUrl.hasLikelyExpiringPlaybackCredentials()) return false
     if (credentialRefreshJob?.isActive == true) return true
@@ -715,6 +720,7 @@ internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message:
     credentialRefreshJob = scope.launch {
         try {
             PlayerStreamsRepository.loadSources(
+                parentMetaId = parentMetaId,
                 type = type,
                 videoId = currentVideoId,
                 season = season,
