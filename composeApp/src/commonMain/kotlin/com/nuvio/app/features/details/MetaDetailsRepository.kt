@@ -200,7 +200,7 @@ object MetaDetailsRepository {
 
     fun peek(type: String, id: String): MetaDetails? {
         if (isWCoreMediaId(id)) return _uiState.value.meta?.takeIf {
-            it.id == id && it.type == type && WCoreNativeLibrary.canPlay(id)
+            it.id == id && it.type == type && (WCoreNativeLibrary.canPlay(id) || (type == "series" && WCoreNativeLibrary.hasOwnedSeries(id)))
         }
         val requestKey = "$type:$id"
         val currentMeta = _uiState.value.meta?.takeIf { it.type == type && it.id == id }

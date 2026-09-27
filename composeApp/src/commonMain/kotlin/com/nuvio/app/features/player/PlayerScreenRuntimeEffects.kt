@@ -7,6 +7,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.nuvio.app.core.network.WCoreNativeLibrary
+import com.nuvio.app.core.network.WCoreConnectionRepository
+import com.nuvio.app.core.network.isWCoreMediaId
+import com.nuvio.app.features.profiles.ProfileRepository
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.p2p.P2pStreamRequest
@@ -38,6 +45,24 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     LaunchedEffect(currentFeedback) {
         if (currentFeedback != null) {
             renderedGestureFeedback = currentFeedback
+        }
+    }
+
+    val nativeItems by WCoreNativeLibrary.items.collectAsStateWithLifecycle()
+    val coreStatus by WCoreConnectionRepository.status.collectAsStateWithLifecycle()
+    LaunchedEffect(activePlaybackKey, args.parentMetaId, args.parentMetaType, nativeItems, coreStatus) {
+        val episodeId = activeVideoId?.takeIf(::isWCoreMediaId) ?: return@LaunchedEffect
+        if (args.parentMetaType == "series") return@LaunchedEffect
+        val expectedOwner = WCoreNativeLibrary.currentScope()?.owner ?: return@LaunchedEffect
+        val expectedKey = activePlaybackKey
+        val metadata = WCoreNativeLibrary.seriesForEpisode(episodeId) ?: return@LaunchedEffect
+        currentCoroutineContext().ensureActive()
+        if (profileId != ProfileRepository.activeProfileId || activePlaybackKey != expectedKey ||
+            !WCoreNativeLibrary.isOwnerCurrent(expectedOwner) || !WCoreNativeLibrary.hasOwnedSeries(metadata.id)) return@LaunchedEffect
+        if (nativeSeriesMatchesPlayback(metadata, episodeId, activeSeasonNumber, activeEpisodeNumber)) {
+            verifiedNativeSeriesId = metadata.id
+            playerMeta = metadata
+            playerMetaVideos = metadata.videos
         }
     }
 

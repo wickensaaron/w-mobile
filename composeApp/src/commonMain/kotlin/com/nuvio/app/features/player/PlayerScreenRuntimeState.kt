@@ -47,10 +47,14 @@ internal class PlayerScreenRuntime(
     val episodeNumber: Int? get() = args.episodeNumber
     val episodeTitle: String? get() = args.episodeTitle
     val episodeThumbnail: String? get() = args.episodeThumbnail
-    val contentType: String? get() = args.contentType
+    var verifiedNativeSeriesId by mutableStateOf<String?>(null)
+    private val ownedNativeParent: String? get() = verifiedNativeSeriesId?.takeIf {
+        com.nuvio.app.core.network.WCoreNativeLibrary.isOwnedSeriesMember(it, activeVideoId, activeSeasonNumber, activeEpisodeNumber)
+    }
+    val contentType: String? get() = if (ownedNativeParent != null) "series" else args.contentType
     val videoId: String? get() = args.videoId
-    val parentMetaId: String get() = args.parentMetaId
-    val parentMetaType: String get() = args.parentMetaType
+    val parentMetaId: String get() = ownedNativeParent ?: args.parentMetaId
+    val parentMetaType: String get() = if (ownedNativeParent != null) "series" else args.parentMetaType
     val providerAddonId: String? get() = args.providerAddonId
     val torrentInfoHash: String? get() = args.torrentInfoHash
     val torrentFileIdx: Int? get() = args.torrentFileIdx

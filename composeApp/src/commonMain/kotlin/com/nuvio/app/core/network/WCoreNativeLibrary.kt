@@ -10,6 +10,8 @@ import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -55,6 +57,9 @@ internal data class WCoreLibraryItem(
     val posterTicket: String? = null,
     val backdropTicket: String? = null,
     val imageExpiresAt: Instant? = null,
+    val seriesWMediaId: String? = null,
+    val jellyfinSeriesId: String? = null,
+    val seriesMembershipStatus: String? = null,
 )
 
 internal fun coreImageTicket(value: String?, origin: String): String? = value?.takeIf {
@@ -81,6 +86,9 @@ internal fun parseWCoreLibrary(body: String, origin: String): List<WCoreLibraryI
             coreImageTicket(row.text("posterUrl"), origin),
             coreImageTicket(row.text("backdropUrl"), origin),
             jellyfin?.text("playbackExpiresAt")?.let { runCatching { Instant.parse(it) }.getOrNull() },
+            row.text("seriesWMediaId")?.takeIf(::isWCoreMediaId),
+            row.text("jellyfinSeriesId")?.takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) },
+            row.text("seriesMembershipStatus")?.take(128),
         )
     }.distinctBy { it.id }
 }
@@ -94,8 +102,10 @@ internal class WCoreNativeClient(
     },
 ) {
     private suspend fun call(session: WCoreLibraryScope, path: String): String {
+        currentCoroutineContext().ensureActive()
         check(scope() == session) { "Core account changed" }
         val response = request(session, path)
+        currentCoroutineContext().ensureActive()
         check(scope() == session) { "Core account changed" }
         check(response.status in 200..299) { "Core unavailable" }
         return response.body
@@ -109,6 +119,12 @@ internal class WCoreNativeClient(
         if (jellyfin?.text("enabled") != "true") return emptyList()
         return parseWCoreLibrary(call(session, "/api/wcore/library"), session.origin)
     }
+
+    suspend fun series(session: WCoreLibraryScope, seriesId: String): WCoreSeriesMembership =
+        loadWCoreSeriesMembership(seriesId) { cursor ->
+            call(session, "/api/wcore/library/series/$seriesId/episodes?limit=$NativeSeriesPageSize" +
+                (cursor?.let { "&cursor=$it" } ?: ""))
+        }
 
     suspend fun detail(session: WCoreLibraryScope, item: WCoreLibraryItem): JsonObject? {
         val coordinates = if (item.type == "episode") "&season=${item.season}&episode=${item.episode}" else ""
@@ -153,6 +169,9 @@ internal fun nativeCoreDetails(item: WCoreLibraryItem, enriched: JsonObject?, ar
 internal object WCoreNativeLibrary {
     private val lock = SynchronizedObject()
     private val refreshMutex = Mutex()
+    private val seriesMutex = Mutex()
+    private data class CachedSeries(val membership: WCoreSeriesMembership, val loadedAt: Instant)
+    private val seriesCache = LinkedHashMap<String, CachedSeries>()
     private val _items = MutableStateFlow<List<MetaPreview>>(emptyList())
     val items = _items.asStateFlow()
     private var owner: WCoreLibraryOwner? = null
@@ -169,7 +188,7 @@ internal object WCoreNativeLibrary {
     }
 
     fun clear() = synchronized(lock) {
-        owner = null; inventory = emptyMap(); artScope = ""; refreshedAt = null; _items.value = emptyList()
+        owner = null; inventory = emptyMap(); seriesCache.clear(); artScope = ""; refreshedAt = null; _items.value = emptyList()
     }
 
     suspend fun refresh(force: Boolean = false) = refreshMutex.withLock {
@@ -199,11 +218,15 @@ internal object WCoreNativeLibrary {
     }
 
     fun canPlay(id: String): Boolean = synchronized(lock) {
-        nativeCorePlayable(id, inventory[id], owner, currentScope())
+        nativeCorePlayable(id, itemLocked(id), owner, currentScope())
     }
 
     suspend fun details(type: String, id: String): MetaDetails? {
         if (!isWCoreMediaId(id)) return null
+        if (type == "series") {
+            loadSeries(id)
+            return fallbackDetails(type, id)
+        }
         if (fallbackDetails(type, id) == null) withTimeoutOrNull(4_000) { refresh() }
         return fallbackDetails(type, id)
     }
@@ -211,18 +234,96 @@ internal object WCoreNativeLibrary {
     fun fallbackDetails(type: String, id: String): MetaDetails? {
         val session = currentScope() ?: return null
         return synchronized(lock) {
-            val item = inventory[id]?.takeIf { owner == session.owner && it.type == type } ?: return@synchronized null
+            if (owner != session.owner) return@synchronized null
+            if (type == "series") return@synchronized seriesDetailsLocked(id)
+            val item = itemLocked(id)?.takeIf { it.type == type } ?: return@synchronized null
+            item.seriesWMediaId?.takeIf { item.seriesMembershipStatus == "verified" }?.let { parent ->
+                seriesCache[parent]?.membership?.takeIf { verifiedSeriesContainsEpisode(it, item) }?.let {
+                    seriesDetailsLocked(parent, item.id)?.let { meta -> return@synchronized meta }
+                }
+            }
             nativeCoreDetails(item, null) { imageReferenceLocked(item, it) }
         }
     }
 
     suspend fun enrichDetails(type: String, id: String): MetaDetails? {
         val session = currentScope() ?: return null
-        val item = synchronized(lock) { inventory[id]?.takeIf { owner == session.owner && it.type == type } } ?: return null
+        if (type == "series") { loadSeries(id); return fallbackDetails(type, id) }
+        val item = synchronized(lock) { itemLocked(id)?.takeIf { owner == session.owner && it.type == type } } ?: return null
+        if (item.type == "episode" && item.seriesMembershipStatus == "verified" && item.seriesWMediaId != null) {
+            seriesForEpisode(item.id)?.let { return it }
+        }
         val rich = withTimeoutOrNull(8_000) { client.detail(session, item) }
         if (currentScope() != session) return null
         return synchronized(lock) {
             if (owner != session.owner) null else nativeCoreDetails(item, rich) { imageReferenceLocked(item, it) }
+        }
+    }
+
+
+    /** Membership is process-only and never published until every snapshot page is verified. */
+    private suspend fun loadSeries(seriesId: String): WCoreSeriesMembership? {
+        if (!isWCoreMediaId(seriesId)) return null
+        currentCoroutineContext().ensureActive()
+        return try {
+            withTimeoutOrNull(45_000) {
+                seriesMutex.withLock {
+                    currentCoroutineContext().ensureActive()
+                    val session = currentScope() ?: return@withLock null
+                    synchronized(lock) {
+                        if (owner == session.owner) seriesCache[seriesId]?.takeIf { Clock.System.now() - it.loadedAt < 4.minutes }
+                            ?.let { return@withLock it.membership }
+                    }
+                    val membership = client.series(session, seriesId)
+                    currentCoroutineContext().ensureActive()
+                    if (currentScope() != session) return@withLock null
+                    synchronized(lock) {
+                        if (currentScope() != session) return@synchronized null
+                        if (owner != session.owner) clear()
+                        owner = session.owner
+                        artScope = coreArtworkScope(session)
+                        seriesCache[seriesId] = CachedSeries(membership, Clock.System.now())
+                        while (seriesCache.size > 12 || seriesCache.values.sumOf { it.membership.members.size } > 20_000)
+                            seriesCache.remove(seriesCache.keys.first())
+                        membership
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+          catch (_: Throwable) { null }
+    }
+
+    suspend fun seriesForEpisode(episodeId: String): MetaDetails? {
+        val session = currentScope() ?: return null
+        val episode = synchronized(lock) { itemLocked(episodeId)?.takeIf { owner == session.owner && it.type == "episode" && it.seriesMembershipStatus == "verified" } } ?: return null
+        val parentId = episode.seriesWMediaId ?: return null
+        val membership = loadSeries(parentId) ?: return null
+        currentCoroutineContext().ensureActive()
+        if (!isOwnerCurrent(session) || !verifiedSeriesContainsEpisode(membership, episode)) return null
+        return synchronized(lock) { if (owner == session.owner && currentScope()?.owner == session.owner) seriesDetailsLocked(parentId, episodeId) else null }
+    }
+
+    fun hasOwnedSeries(id: String): Boolean = synchronized(lock) { owner == currentScope()?.owner && seriesCache.containsKey(id) }
+
+    fun isOwnedSeriesMember(seriesId: String, episodeId: String?, season: Int?, episode: Int?): Boolean = synchronized(lock) {
+        owner == currentScope()?.owner && seriesCache[seriesId]?.membership?.members?.any {
+            it.id == episodeId && it.season == season && it.episode == episode
+        } == true
+    }
+
+    private fun seriesDetailsLocked(seriesId: String, focusedEpisodeId: String? = null): MetaDetails? {
+        val membership = seriesCache[seriesId]?.membership ?: return null
+        val seed = focusedEpisodeId?.let(inventory::get)?.takeIf { verifiedSeriesContainsEpisode(membership, it) }
+            ?: inventory.values.firstOrNull { verifiedSeriesContainsEpisode(membership, it) && membership.members.any { member -> member.id == it.id } }
+        val metadata = seed?.let { nativeCoreDetails(it, null) { kind -> imageReferenceLocked(it, kind) } }
+        return nativeCoreSeriesDetails(membership, focusedEpisodeId, metadata)
+    }
+
+    private fun itemLocked(id: String): WCoreLibraryItem? = inventory[id] ?: seriesCache.values.firstNotNullOfOrNull { cached ->
+        cached.membership.members.firstOrNull { it.id == id }?.let { member ->
+            WCoreLibraryItem(member.id, "episode", cached.membership.title, season = member.season, episode = member.episode,
+                episodeTitle = member.title, seriesWMediaId = cached.membership.id, jellyfinSeriesId = cached.membership.jellyfinSeriesId,
+                seriesMembershipStatus = "verified")
         }
     }
 

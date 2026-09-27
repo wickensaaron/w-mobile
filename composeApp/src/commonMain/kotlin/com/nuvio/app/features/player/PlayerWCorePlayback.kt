@@ -117,3 +117,11 @@ internal fun PlayerScreenRuntime.scheduleCorePlaybackReset(playWhenReady: Boolea
     corePlaybackReloadGeneration++
     pendingCorePlaybackReset = CorePlaybackResetPreference(activePlaybackKey, playWhenReady)
 }
+
+
+/** An early episode fallback can join a parent only through exact verified membership. */
+internal fun nativeSeriesMatchesPlayback(
+    meta: com.nuvio.app.features.details.MetaDetails, episodeId: String, season: Int?, episode: Int?,
+): Boolean = meta.type == "series" && com.nuvio.app.core.network.isWCoreMediaId(meta.id) &&
+    com.nuvio.app.core.network.isWCoreMediaId(episodeId) && season != null && season >= 0 && episode != null && episode > 0 &&
+    meta.videos.any { it.id == episodeId && it.season == season && it.episode == episode && it.available }
