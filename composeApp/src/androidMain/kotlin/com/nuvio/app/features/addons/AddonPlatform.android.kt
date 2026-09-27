@@ -39,6 +39,15 @@ actual object AddonStorage {
         preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
     }
 
+    actual fun loadSyncPayload(profileId: Int): String? =
+        preferences?.getString("addon_sync_payload_$profileId", null)
+
+    actual fun saveSyncPayload(profileId: Int, payload: String) {
+        checkNotNull(preferences).edit().putString("addon_sync_payload_$profileId", payload).commit().also {
+            check(it) { "Could not save addon sync state" }
+        }
+    }
+
     actual fun loadStarterBootstrapStatus(profileId: Int): String? =
         preferences?.getString("${starterBootstrapKey}_$profileId", null)
 

@@ -1,6 +1,8 @@
 package com.nuvio.app.features.addons
 
 internal expect object AddonStorage {
+    fun loadSyncPayload(profileId: Int): String?
+    fun saveSyncPayload(profileId: Int, payload: String)
     fun loadStarterBootstrapStatus(profileId: Int): String?
     fun saveStarterBootstrapStatus(profileId: Int, status: String)
     fun loadInstalledAddonUrls(profileId: Int): List<String>

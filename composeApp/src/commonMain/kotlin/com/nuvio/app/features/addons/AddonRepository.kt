@@ -1,12 +1,23 @@
 package com.nuvio.app.features.addons
 
 import co.touchlab.kermit.Logger
+import com.nuvio.app.core.auth.AuthRepository
+import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.sync.decodeRecoverableAccountPayload
+import com.nuvio.app.core.sync.canSeedEmptyAccountList
+import com.nuvio.app.core.sync.AccountReplacement
+import com.nuvio.app.core.sync.replayAccountReplacement
+import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.sync.putSyncOriginClientId
 import com.nuvio.app.features.profiles.ProfileRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.postgrest.rpc
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +57,15 @@ private data class AddonPushItem(
     @SerialName("sort_order") val sortOrder: Int = 0,
 )
 
+@Serializable
+private data class StoredAddonSync(
+    val owner: String? = null,
+    val hasRemoteSnapshot: Boolean = false,
+    val pending: AccountReplacement<AddonPushItem>? = null,
+    val names: Map<String, String> = emptyMap(),
+    val recoveryPayload: String? = null,
+)
+
 private const val ADDON_PUSH_DEBOUNCE_MS = 500L
 private const val STARTER_BOOTSTRAP_PENDING = "pending"
 private const val STARTER_BOOTSTRAP_DONE = "done"
@@ -58,6 +78,8 @@ object AddonRepository {
     private val _uiState = MutableStateFlow(AddonsUiState())
     val uiState: StateFlow<AddonsUiState> = _uiState.asStateFlow()
 
+    private var generation = 0L
+    private val syncMutex = Mutex()
     private var initialized = false
     private var currentProfileId: Int = 1
     private val activeRefreshJobs = mutableMapOf<String, Job>()
@@ -84,6 +106,7 @@ object AddonRepository {
                 }
             }
         val enabledByUrl = loadLocalEnabledStates()
+        val names = loadSyncState(currentProfileId).names
         log.d { "initialize() — local addon count: ${storedUrls.size}" }
         if (storedUrls.isEmpty()) return
 
@@ -93,6 +116,7 @@ object AddonRepository {
                 existingByUrl[manifestUrl].toPendingAddon(
                     manifestUrl = manifestUrl,
                     enabled = enabledByUrl[manifestUrl],
+                    userSetName = names[manifestUrl],
                 )
             },
         )
@@ -109,6 +133,7 @@ object AddonRepository {
     fun onProfileChanged(profileId: Int) {
         val effectiveProfileId = resolveEffectiveProfileId(profileId)
         if (effectiveProfileId == currentProfileId && initialized) return
+        generation++
         cancelActiveRefreshes()
         currentProfileId = effectiveProfileId
         initialized = false
@@ -116,6 +141,7 @@ object AddonRepository {
     }
 
     fun clearLocalState() {
+        generation++
         cancelActiveRefreshes()
         pushJobsByProfile.values.forEach(Job::cancel)
         pushJobsByProfile.clear()
@@ -125,17 +151,31 @@ object AddonRepository {
     }
 
     suspend fun pullFromServer(profileId: Int) {
-        currentProfileId = resolveEffectiveProfileId(profileId)
+        val account = AuthRepository.state.value as? AuthState.Authenticated ?: return
+        if (account.isAnonymous) return
+        val effectiveProfileId = resolveEffectiveProfileId(profileId)
+        if (effectiveProfileId != currentProfileId) return
+        val owner = currentNuvioSyncIdentity() ?: return
+        val epoch = generation
+        syncMutex.withLock {
+            val isCurrent = { generation == epoch && currentProfileId == effectiveProfileId && currentNuvioSyncIdentity() == owner }
+            if (!isCurrent() || !replayAddons(effectiveProfileId, isCurrent)) return@withLock
+            pullRemoteAddons(effectiveProfileId, owner, isCurrent)
+        }
+    }
+
+    private suspend fun pullRemoteAddons(profileId: Int, owner: String, isCurrent: () -> Boolean) {
         log.i { "pullFromServer() — profileId=$profileId, initialized=$initialized" }
         runCatching {
             val rows = SupabaseProvider.client.postgrest
                 .from("addons")
                 .select {
-                    filter { eq("profile_id", currentProfileId) }
+                    filter { eq("profile_id", profileId) }
                     order("sort_order", Order.ASCENDING)
                 }
                 .decodeList<AddonRow>()
 
+            if (!isCurrent() || loadSyncState(profileId).pending != null) return@runCatching
             val rowsByUrl = linkedMapOf<String, AddonRow>()
             rows.forEach { row ->
                 val manifestUrl = ensureManifestSuffix(row.url)
@@ -147,12 +187,25 @@ object AddonRepository {
             val urls = rowsByUrl.keys.toList()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
 
-            if (urls.isEmpty() &&
-                AddonStorage.loadStarterBootstrapStatus(currentProfileId) == STARTER_BOOTSTRAP_PENDING
-            ) {
-                initialized = true
-                pushToServer()
-                return@runCatching
+            if (urls.isEmpty() && AddonStorage.loadInstalledAddonUrls(profileId).isNotEmpty()) {
+                val stored = loadSyncState(profileId)
+                // An empty new account can seed first-launch defaults or its own local list.
+                // Legacy records without an owner remain local and are not silently imported.
+                if (canSeedEmptyAccountList(
+                    storedOwner = stored.owner,
+                    currentOwner = owner,
+                    hasRemoteSnapshot = stored.hasRemoteSnapshot,
+                    starterPending = AddonStorage.loadStarterBootstrapStatus(profileId) == STARTER_BOOTSTRAP_PENDING,
+                )) {
+                    initialize()
+                    queueCurrentAddons(profileId)
+                    replayAddons(profileId, isCurrent)
+                    return@runCatching
+                }
+                if (!stored.hasRemoteSnapshot && stored.owner == null) {
+                    initialize()
+                    return@runCatching
+                }
             }
 
             val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
@@ -166,6 +219,12 @@ object AddonRepository {
                     )
                 },
             )
+            saveSyncState(profileId, StoredAddonSync(
+                owner = owner,
+                hasRemoteSnapshot = true,
+                names = rowsByUrl.mapNotNull { (url, row) -> row.name?.let { url to it } }.toMap(),
+                recoveryPayload = loadSyncState(profileId).recoveryPayload,
+            ))
             persist()
             AddonStorage.saveStarterBootstrapStatus(currentProfileId, STARTER_BOOTSTRAP_DONE)
             urls.forEach { url ->
@@ -178,6 +237,7 @@ object AddonRepository {
             initialized = true
             log.i { "pullFromServer() — applied ${urls.size} addons to state" }
         }.onFailure { error ->
+            if (error is CancellationException) throw error
             log.e { "pullFromServer() — FAILED (${error::class.simpleName})" }
         }
     }
@@ -192,6 +252,9 @@ object AddonRepository {
     }
 
     suspend fun addAddon(rawUrl: String): AddAddonResult {
+        val owner = currentNuvioSyncIdentity()
+        val epoch = generation
+        val profileId = currentProfileId
         if (isUsingPrimaryAddonsFromSecondaryProfile()) {
             return AddAddonResult.Error(getString(Res.string.profile_primary_addons_required))
         }
@@ -214,8 +277,13 @@ object AddonRepository {
                     payload = payload,
                 )
             }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             return AddAddonResult.Error(error.message ?: getString(Res.string.addon_load_manifest_failed))
+        }
+        if (generation != epoch || currentProfileId != profileId || currentNuvioSyncIdentity() != owner) {
+            return AddAddonResult.Error(getString(Res.string.addon_load_manifest_failed))
         }
 
         _uiState.update { current ->
@@ -361,41 +429,88 @@ object AddonRepository {
         activeRefreshJobs[manifestUrl] = refreshJob
     }
 
-    private fun pushToServer() {
-        if (isUsingPrimaryAddonsFromSecondaryProfile()) return
-        val profileId = currentProfileId
-        val addons = _uiState.value.addons
-            .distinctBy { it.manifestUrl }
-            .mapIndexed { index, addon ->
-                AddonPushItem(
-                    url = addon.manifestUrl,
-                    name = addon.userSetName?.takeIf { it.isNotBlank() } ?: addon.manifest?.name ?: "",
-                    enabled = addon.enabled,
-                    sortOrder = index,
-                )
-            }
-        pushJobsByProfile[profileId]?.cancel()
-        var pushJob: Job? = null
-        pushJob = scope.launch {
-            try {
-                delay(ADDON_PUSH_DEBOUNCE_MS)
-                log.d { "pushToServer() — profileId=$profileId, pushing ${addons.size} addons" }
+    private fun currentPushItems(): List<AddonPushItem> = _uiState.value.addons
+        .distinctBy { it.manifestUrl }
+        .mapIndexed { index, addon ->
+            AddonPushItem(
+                url = addon.manifestUrl,
+                name = addon.userSetName?.takeIf { it.isNotBlank() } ?: addon.manifest?.name ?: "",
+                enabled = addon.enabled,
+                sortOrder = index,
+            )
+        }
+
+    private fun loadSyncState(profileId: Int): StoredAddonSync {
+        val raw = AddonStorage.loadSyncPayload(profileId) ?: return StoredAddonSync()
+        val decoded = decodeRecoverableAccountPayload<StoredAddonSync>(json, raw, "pending")
+        val stored = decoded.value ?: StoredAddonSync()
+        return if (decoded.damagedPayload == null) stored else stored.copy(
+            // Keep local URLs usable without treating damaged intent as an empty remote list.
+            pending = AccountReplacement(null, emptyList()),
+            recoveryPayload = decoded.damagedPayload,
+        )
+    }
+
+    private fun saveSyncState(profileId: Int, stored: StoredAddonSync) =
+        AddonStorage.saveSyncPayload(profileId, json.encodeToString(stored))
+
+    private fun queueCurrentAddons(profileId: Int) {
+        val owner = currentNuvioSyncIdentity()
+        val items = currentPushItems()
+        val stored = loadSyncState(profileId)
+        saveSyncState(profileId, StoredAddonSync(
+            owner = owner,
+            hasRemoteSnapshot = stored.owner == owner && stored.hasRemoteSnapshot,
+            pending = AccountReplacement(owner, items),
+            names = items.associate { it.url to it.name },
+            recoveryPayload = stored.recoveryPayload,
+        ))
+    }
+
+    private suspend fun replayAddons(profileId: Int, isCurrent: () -> Boolean): Boolean {
+        val stored = loadSyncState(profileId)
+        val pending = stored.pending
+        return replayAccountReplacement(
+            pending = pending,
+            currentOwner = ::currentNuvioSyncIdentity,
+            isCurrent = { isCurrent() && loadSyncState(profileId).pending == pending },
+            push = { addons ->
                 val params = buildJsonObject {
                     put("p_profile_id", profileId)
                     put("p_addons", json.encodeToJsonElement(addons))
                     putSyncOriginClientId()
                 }
                 SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
+            },
+            acknowledge = {
+                saveSyncState(profileId, loadSyncState(profileId).copy(pending = null, hasRemoteSnapshot = true))
                 AddonStorage.saveStarterBootstrapStatus(profileId, STARTER_BOOTSTRAP_DONE)
-                log.d { "pushToServer() — success" }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                log.e { "pushToServer() — FAILED (${error::class.simpleName})" }
-            } finally {
-                if (pushJobsByProfile[profileId] === pushJob) {
-                    pushJobsByProfile.remove(profileId)
+            },
+            onFailure = { error -> log.w { "Keeping local addons for retry (${error::class.simpleName})" } },
+        )
+    }
+
+    private fun pushToServer() {
+        if (isUsingPrimaryAddonsFromSecondaryProfile()) return
+        val profileId = currentProfileId
+        // Write the exact list before scheduling network work, including empty lists.
+        queueCurrentAddons(profileId)
+        val account = AuthRepository.state.value as? AuthState.Authenticated ?: return
+        if (account.isAnonymous) return
+        val owner = currentNuvioSyncIdentity()
+        val epoch = generation
+        pushJobsByProfile[profileId]?.cancel()
+        var pushJob: Job? = null
+        pushJob = scope.launch {
+            try {
+                delay(ADDON_PUSH_DEBOUNCE_MS)
+                syncMutex.withLock {
+                    replayAddons(profileId) {
+                        generation == epoch && currentNuvioSyncIdentity() == owner
+                    }
                 }
+            } finally {
+                if (pushJobsByProfile[profileId] === pushJob) pushJobsByProfile.remove(profileId)
             }
         }
         pushJobsByProfile[profileId] = pushJob

@@ -7,6 +7,10 @@ import com.nuvio.app.core.auth.isAnonymous
 import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.core.network.WCoreConnectionRepository
 import com.nuvio.app.core.poster.CustomPosterUrlRepository
+import com.nuvio.app.core.sync.decodeRecoverableAccountPayload
+import com.nuvio.app.core.sync.AccountReplacement
+import com.nuvio.app.core.sync.replayAccountReplacement
+import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
 import com.nuvio.app.core.sync.ProfileSettingsSync
 import com.nuvio.app.core.sync.putSyncOriginClientId
 import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
@@ -38,6 +42,9 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepositor
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,6 +71,9 @@ private data class StoredProfilePayload(
     val hasEverSelectedProfile: Boolean = false,
     val rememberLastProfileEnabled: Boolean = false,
     val profiles: List<NuvioProfile> = emptyList(),
+    val syncIdentity: String? = null,
+    val pendingProfiles: AccountReplacement<ProfilePushPayload>? = null,
+    val recoveryPayload: String? = null,
 )
 
 object ProfileRepository {
@@ -75,8 +85,13 @@ object ProfileRepository {
     private val _state = MutableStateFlow(ProfileState())
     val state: StateFlow<ProfileState> = _state.asStateFlow()
 
+    private var generation = 0L
     private var activeProfileIndex: Int = 1
     private var loadedCacheForUserId: String? = null
+    private var syncIdentity: String? = null
+    private var pendingProfiles: AccountReplacement<ProfilePushPayload>? = null
+    private var recoveryPayload: String? = null
+    private val profileSyncMutex = Mutex()
 
     val activeProfileId: Int get() = activeProfileIndex
 
@@ -102,12 +117,17 @@ object ProfileRepository {
         loadedCacheForUserId = userId
         if (stored == null) {
             _state.value = ProfileState()
+            syncIdentity = null
+            pendingProfiles = null
             activeProfileIndex = 1
             return
         }
 
         if (stored.userId != userId) {
             _state.value = ProfileState()
+            syncIdentity = null
+            pendingProfiles = null
+            recoveryPayload = null
             activeProfileIndex = 1
             return
         }
@@ -116,39 +136,85 @@ object ProfileRepository {
     }
 
     fun clearInMemory() {
+        generation++
         loadedCacheForUserId = null
+        syncIdentity = null
+        pendingProfiles = null
+        recoveryPayload = null
         activeProfileIndex = 1
         _state.value = ProfileState()
     }
 
     suspend fun pullProfiles() {
-        if (AuthRepository.state.value.isAnonymous) {
-            if (!_state.value.isLoaded) {
-                _state.value = _state.value.copy(isLoaded = true)
-            }
+        val account = AuthRepository.state.value as? AuthState.Authenticated ?: return
+        if (account.isAnonymous) {
+            _state.value = _state.value.copy(isLoaded = true)
             return
         }
-        try {
-            val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
-            val profiles = result.decodeList<NuvioProfile>()
-            _state.value = _state.value.copy(
-                profiles = profiles.sortedBy { it.profileIndex },
-                isLoaded = true,
-                activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
-                    ?: profiles.firstOrNull(),
-            )
-            if (_state.value.activeProfile != null) {
-                activeProfileIndex = _state.value.activeProfile!!.profileIndex
+        val owner = currentNuvioSyncIdentity() ?: return
+        val epoch = generation
+        profileSyncMutex.withLock {
+            val isCurrent = { generation == epoch && currentNuvioSyncIdentity() == owner }
+            if (!isCurrent()) return@withLock
+            if (!replayProfiles(isCurrent)) {
+                if (isCurrent()) _state.value = _state.value.copy(isLoaded = true)
+                return@withLock
             }
-            persist()
-        } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile pull")) return
-            log.e(e) { "Failed to pull profiles" }
-            if (!_state.value.isLoaded) {
+            try {
+                val result = SupabaseProvider.client.postgrest.rpc("sync_pull_profiles")
+                val profiles = result.decodeList<NuvioProfile>()
+                if (!isCurrent() || pendingProfiles != null) return@withLock
+                if (profiles.isEmpty() && _state.value.profiles.isNotEmpty()) {
+                    // Seed only when the original backend/account ownership is known.
+                    if (syncIdentity == owner) {
+                        pendingProfiles = AccountReplacement(owner, _state.value.profiles.map { it.toPushPayload() })
+                        persist()
+                        replayProfiles(isCurrent)
+                    }
+                    _state.value = _state.value.copy(isLoaded = true)
+                    return@withLock
+                }
+                syncIdentity = owner
+                _state.value = _state.value.copy(
+                    profiles = profiles.sortedBy { it.profileIndex },
+                    isLoaded = true,
+                    activeProfile = profiles.find { it.profileIndex == activeProfileIndex }
+                        ?: profiles.firstOrNull(),
+                )
+                _state.value.activeProfile?.let { activeProfileIndex = it.profileIndex }
+                syncPinCache(profiles)
+                persist()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!isCurrent()) return@withLock
+                if (AuthRepository.signOutIfSessionInvalid(e, "Profile pull")) return@withLock
+                log.e(e) { "Failed to pull profiles" }
                 _state.value = _state.value.copy(isLoaded = true)
             }
         }
     }
+
+    private suspend fun replayProfiles(isCurrent: () -> Boolean): Boolean = replayAccountReplacement(
+        pending = pendingProfiles,
+        currentOwner = ::currentNuvioSyncIdentity,
+        isCurrent = isCurrent,
+        push = { profiles ->
+            val params = buildJsonObject {
+                put("p_client_max_profiles", MAX_PROFILES)
+                put("p_profiles", json.encodeToJsonElement(profiles))
+                putSyncOriginClientId()
+            }
+            SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
+        },
+        acknowledge = { pending ->
+            if (pendingProfiles == pending) {
+                pendingProfiles = null
+                persist()
+            }
+        },
+        onFailure = { error -> log.w(error) { "Keeping local profiles for retry" } },
+    )
 
     fun selectProfile(profileIndex: Int) {
         if (activeProfileIndex != profileIndex) WCoreConnectionRepository.onProfileChanged()
@@ -194,21 +260,17 @@ object ProfileRepository {
     }
 
     suspend fun pushProfiles(profiles: List<ProfilePushPayload>) {
-        if (AuthRepository.state.value.isAnonymous) {
+        val account = AuthRepository.state.value as? AuthState.Authenticated ?: return
+        // The deployed replacement RPC requires profile 1 and performs deletion cleanup.
+        require(profiles.any { it.profileIndex == 1 }) { "Primary profile required" }
+        val owner = currentNuvioSyncIdentity() ?: return
+        val epoch = generation
+        profileSyncMutex.withLock {
+            if (generation != epoch || currentNuvioSyncIdentity() != owner) return@withLock
+            syncIdentity = owner
+            pendingProfiles = if (account.isAnonymous) null else AccountReplacement(owner, profiles)
             applyPayloadsLocally(profiles)
-            return
-        }
-        try {
-            val params = buildJsonObject {
-                put("p_client_max_profiles", MAX_PROFILES)
-                put("p_profiles", json.encodeToJsonElement(profiles))
-                putSyncOriginClientId()
-            }
-            SupabaseProvider.client.postgrest.rpc("sync_push_profiles", params)
-            pullProfiles()
-        } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile push")) return
-            log.e(e) { "Failed to push profiles" }
+            if (!account.isAnonymous) replayProfiles { generation == epoch && currentNuvioSyncIdentity() == owner }
         }
     }
 
@@ -287,30 +349,11 @@ object ProfileRepository {
     }
 
     suspend fun deleteProfile(profileIndex: Int) {
-        if (AuthRepository.state.value.isAnonymous) {
-            val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
-            ProfilePinCacheStorage.removePayload(profileIndex)
-            _state.value = _state.value.copy(
-                profiles = remaining,
-                activeProfile = if (_state.value.activeProfile?.profileIndex == profileIndex) remaining.firstOrNull() else _state.value.activeProfile,
-            )
-            if (_state.value.activeProfile != null) {
-                activeProfileIndex = _state.value.activeProfile!!.profileIndex
-            }
-            persist()
-            return
-        }
-        try {
-            val params = buildJsonObject {
-                put("p_profile_id", profileIndex)
-                putSyncOriginClientId()
-            }
-            SupabaseProvider.client.postgrest.rpc("sync_delete_profile_data", params)
-            pullProfiles()
-        } catch (e: Throwable) {
-            if (AuthRepository.signOutIfSessionInvalid(e, "Profile delete")) return
-            log.e(e) { "Failed to delete profile $profileIndex" }
-        }
+        if (profileIndex == 1) return
+        val remaining = _state.value.profiles.filter { it.profileIndex != profileIndex }
+        if (remaining.none { it.profileIndex == 1 }) return
+        pushProfiles(remaining.map { it.toPushPayload() })
+        ProfilePinCacheStorage.removePayload(profileIndex)
     }
 
     suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult {
@@ -405,9 +448,11 @@ object ProfileRepository {
 
     private fun applyPayloadsLocally(payloads: List<ProfilePushPayload>) {
         val authState = AuthRepository.state.value as? AuthState.Authenticated ?: return
+        val existingByIndex = _state.value.profiles.associateBy { it.profileIndex }
         val profiles = payloads.map { p ->
+            val existing = existingByIndex[p.profileIndex]
             NuvioProfile(
-                id = "",
+                id = existing?.id.orEmpty(),
                 userId = authState.userId,
                 profileIndex = p.profileIndex,
                 name = p.name,
@@ -418,6 +463,10 @@ object ProfileRepository {
                 profileBackgroundUrl = p.profileBackgroundUrl,
                 usesPrimaryAddons = p.usesPrimaryAddons,
                 usesPrimaryPlugins = p.usesPrimaryPlugins,
+                pinEnabled = existing?.pinEnabled ?: false,
+                pinLockedUntil = existing?.pinLockedUntil,
+                createdAt = existing?.createdAt.orEmpty(),
+                updatedAt = existing?.updatedAt.orEmpty(),
             )
         }.sortedBy { it.profileIndex }
         _state.value = _state.value.copy(
@@ -436,13 +485,20 @@ object ProfileRepository {
         val payload = ProfileStorage.loadPayload().orEmpty().trim()
         if (payload.isEmpty()) return null
 
-        return runCatching {
-            json.decodeFromString<StoredProfilePayload>(payload)
-        }.getOrNull()
+        val decoded = decodeRecoverableAccountPayload<StoredProfilePayload>(json, payload, "pendingProfiles")
+        if (decoded.damagedPayload != null) recoveryPayload = decoded.damagedPayload
+        val stored = decoded.value ?: return null
+        return if (decoded.damagedPayload == null) stored else stored.copy(
+            pendingProfiles = AccountReplacement(null, stored.profiles.map { it.toPushPayload() }),
+            recoveryPayload = decoded.damagedPayload,
+        )
     }
 
     private fun applyStoredPayload(stored: StoredProfilePayload) {
         val profiles = stored.profiles.sortedBy { it.profileIndex }
+        syncIdentity = stored.syncIdentity
+        pendingProfiles = stored.pendingProfiles
+        recoveryPayload = stored.recoveryPayload
         activeProfileIndex = stored.activeProfileIndex
         _state.value = ProfileState(
             profiles = profiles,
@@ -547,6 +603,9 @@ object ProfileRepository {
                     hasEverSelectedProfile = state.hasEverSelectedProfile,
                     rememberLastProfileEnabled = state.rememberLastProfileEnabled,
                     profiles = state.profiles,
+                    syncIdentity = syncIdentity,
+                    pendingProfiles = pendingProfiles,
+                    recoveryPayload = recoveryPayload,
                 ),
             ),
         )
@@ -558,4 +617,16 @@ data class ProfileLockState(
     @kotlinx.serialization.SerialName("profile_index") val profileIndex: Int,
     @kotlinx.serialization.SerialName("pin_enabled") val pinEnabled: Boolean = false,
     @kotlinx.serialization.SerialName("pin_locked_until") val pinLockedUntil: String? = null,
+)
+
+internal fun NuvioProfile.toPushPayload(): ProfilePushPayload = ProfilePushPayload(
+    profileIndex = profileIndex,
+    name = name,
+    avatarColorHex = avatarColorHex,
+    usesPrimaryAddons = usesPrimaryAddons,
+    usesPrimaryPlugins = usesPrimaryPlugins,
+    avatarId = avatarId,
+    avatarUrl = avatarUrl,
+    profileBackgroundId = profileBackgroundId,
+    profileBackgroundUrl = profileBackgroundUrl,
 )

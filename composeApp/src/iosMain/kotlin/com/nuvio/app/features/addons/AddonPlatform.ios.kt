@@ -28,6 +28,13 @@ actual object AddonStorage {
     private const val addonUrlsKey = "installed_manifest_urls"
     private const val addonEnabledStatesKey = "installed_manifest_enabled_states"
 
+    actual fun loadSyncPayload(profileId: Int): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey("addon_sync_payload_$profileId")
+
+    actual fun saveSyncPayload(profileId: Int, payload: String) {
+        NSUserDefaults.standardUserDefaults.setObject(payload, forKey = "addon_sync_payload_$profileId")
+    }
+
     actual fun loadStarterBootstrapStatus(profileId: Int): String? =
         NSUserDefaults.standardUserDefaults.stringForKey("${starterBootstrapKey}_$profileId")
 
