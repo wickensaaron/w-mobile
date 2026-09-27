@@ -59,7 +59,7 @@ internal object WatchProgressCodec {
 
     fun decodePayload(payload: String): StoredWatchProgressPayload =
         runCatching {
-            json.decodeFromString<StoredWatchProgressPayload>(payload).let { storedPayload ->
+            json.decodeFromString<StoredWatchProgressPayload>(payload).scrubCoreSources().let { storedPayload ->
                 val migratedEntries = storedPayload.entries
                     .map { entry -> entry.normalizedCompletion().withResolvedProgressKey() }
                     .newestByProgressKey()
@@ -98,7 +98,7 @@ internal object WatchProgressCodec {
     ): String =
         json.encodeToString(
             StoredWatchProgressPayload(
-                entries = entries
+                entries = entries.map { it.scrubCoreSource() }
                     .newestByProgressKey()
                     .values
                     .sortedWith(watchProgressEntryFreshnessComparator.reversed()),
@@ -106,9 +106,9 @@ internal object WatchProgressCodec {
                 deltaCursorEventId = deltaCursorEventId,
                 deltaInitialized = deltaInitialized,
                 dirtyProgressKeys = dirtyProgressKeys,
-                pendingDeletes = pendingDeletes.newestByProgressKey().values.toList(),
+                pendingDeletes = pendingDeletes.map { it.scrubCoreSource() }.newestByProgressKey().values.toList(),
                 syncIdentity = syncIdentity,
-                otherIdentities = otherIdentities,
+                otherIdentities = otherIdentities.mapValues { it.value.scrubCoreSources() },
             ),
         )
 }
@@ -237,3 +237,24 @@ private fun WatchProgressEntry.toDomainProgressRecord(): WatchingProgressRecord 
             identityKey = entry.resolvedProgressKey(),
         )
     }
+
+
+/** Remove historical signed Core playback credentials while retaining ordinary addon links. */
+internal fun scrubCoreSourceUrl(providerAddonId: String?, url: String?): String? {
+    if (providerAddonId == "wcore" || providerAddonId?.startsWith("wcore:", ignoreCase = true) == true) return null
+    if (url == null) return null
+    if (url.startsWith("wcore-source://", ignoreCase = true)) return null
+    val path = url.substringBefore('?').substringBefore('#').let {
+        if ("://" in it) "/" + it.substringAfter("://").substringAfter('/', "") else it
+    }.lowercase()
+    return url.takeUnless { path.startsWith("/api/wcore/stream/") || path.startsWith("/api/v1/stream/") ||
+        path.startsWith("/api/v1/playback/stream/") }
+}
+
+internal fun WatchProgressEntry.scrubCoreSource(): WatchProgressEntry =
+    copy(lastSourceUrl = scrubCoreSourceUrl(providerAddonId, lastSourceUrl))
+
+private fun StoredWatchProgressPayload.scrubCoreSources(): StoredWatchProgressPayload = copy(
+    entries = entries.map { it.scrubCoreSource() }, pendingDeletes = pendingDeletes.map { it.scrubCoreSource() },
+    otherIdentities = otherIdentities.mapValues { it.value.scrubCoreSources() },
+)

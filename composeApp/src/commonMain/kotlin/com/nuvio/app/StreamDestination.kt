@@ -32,6 +32,10 @@ import com.nuvio.app.features.player.resolveContentLanguage
 import com.nuvio.app.features.player.sanitizePlaybackHeaders
 import com.nuvio.app.features.player.sanitizePlaybackResponseHeaders
 import com.nuvio.app.features.streams.StreamBehaviorHints
+import com.nuvio.app.features.streams.WCorePlaybackSources
+import com.nuvio.app.features.profiles.ProfileRepository
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamLinkCacheRepository
@@ -74,6 +78,7 @@ internal fun StreamDestination(
         }
         return
     }
+    val launchProfileId = remember(route.launchId) { launch.profileId ?: ProfileRepository.activeProfileId }
     val pauseDescription = launch.pauseDescription
     val streamRouteScope = rememberCoroutineScope()
     var autoPlayNavigationStarted by remember(route.launchId) { mutableStateOf(false) }
@@ -383,7 +388,14 @@ internal fun StreamDestination(
         if (reuseNavigated) return@LaunchedEffect
         if (autoPlayHandled) return@LaunchedEffect
         if (streamsUiState.requestToken != expectedStreamsRequestToken) return@LaunchedEffect
-        val selectedStream = streamsUiState.autoPlayStream ?: return@LaunchedEffect
+        val pickedStream = streamsUiState.autoPlayStream ?: return@LaunchedEffect
+        if (launchProfileId != ProfileRepository.activeProfileId) return@LaunchedEffect
+        val selectedStream = WCorePlaybackSources.refreshSelected(pickedStream) ?: run {
+            StreamsRepository.skipAutoPlayStream(pickedStream)
+            return@LaunchedEffect
+        }
+        currentCoroutineContext().ensureActive()
+        if (launchProfileId != ProfileRepository.activeProfileId || StreamsRepository.uiState.value.requestToken != expectedStreamsRequestToken) return@LaunchedEffect
         val stream = if (DirectDebridPlaybackResolver.shouldResolveToPlayableStream(selectedStream)) {
             StreamsRepository.setOverlayVisible(true, getString(Res.string.debrid_resolving_stream))
             when (
@@ -527,7 +539,25 @@ internal fun StreamDestination(
         resolvedResumeProgressFraction: Float?,
         forceExternal: Boolean,
         forceInternal: Boolean,
+        coreRefreshed: Boolean = false,
     ) {
+        if (launchProfileId != ProfileRepository.activeProfileId || StreamsRepository.uiState.value.requestToken != expectedStreamsRequestToken) return
+        if (stream.isWCoreStream && !coreRefreshed) {
+            if (resolvingDebridStream) return
+            resolvingDebridStream = true
+            streamRouteScope.launch {
+                try {
+                    val refreshed = WCorePlaybackSources.refreshSelected(stream)
+                    currentCoroutineContext().ensureActive()
+                    if (refreshed != null && launchProfileId == ProfileRepository.activeProfileId &&
+                        StreamsRepository.uiState.value.requestToken == expectedStreamsRequestToken) {
+                        openSelectedStream(refreshed, resolvedResumePositionMs, resolvedResumeProgressFraction,
+                            forceExternal, forceInternal, coreRefreshed = true)
+                    } else NuvioToastController.show("W Core source unavailable. Retry its connection in Settings.")
+                } finally { resolvingDebridStream = false }
+            }
+            return
+        }
         if (DirectDebridPlaybackResolver.shouldResolveToPlayableStream(stream)) {
             if (resolvingDebridStream) return
             streamRouteScope.launch {

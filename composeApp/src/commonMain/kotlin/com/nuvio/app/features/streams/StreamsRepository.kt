@@ -87,7 +87,7 @@ object StreamsRepository {
             episode = episode,
             manualSelection = manualSelection,
         )
-        val requestKey = "$requestToken::pluginsGrouped=${pluginUiState.groupStreamsByRepository}"
+        val requestKey = "$requestToken::pluginsGrouped=${pluginUiState.groupStreamsByRepository}::core=${WCorePlaybackSources.cacheScope()}"
         val currentState = _uiState.value
         if (
             !forceRefresh &&
@@ -691,6 +691,7 @@ object StreamsRepository {
     }
 
     fun clear() {
+        WCorePlaybackSources.clearRefreshState()
         PluginRepository.setLocalPluginSearchPaused(true)
         activeJob?.cancel()
         activeJob = null

@@ -44,6 +44,7 @@ object WCoreConnectionRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lock = SynchronizedObject()
     private var generation = 0L
+    private var lifecycleRevision = 0L
     private var exchangeJob: Job? = null
     private var userId: String? = null
     private var supabaseAccessToken: String? = null
@@ -67,6 +68,7 @@ object WCoreConnectionRepository {
             if (this.userId == userId && supabaseAccessToken == accessToken && exchangeJob?.isActive == true) {
                 return
             }
+            if (this.userId != userId) lifecycleRevision++
             generation++
             exchangeJob?.cancel()
             this.userId = userId
@@ -93,6 +95,7 @@ object WCoreConnectionRepository {
 
     private fun changeOrigin(nextOrigin: String?) {
         synchronized(lock) {
+            lifecycleRevision++
             generation++
             exchangeJob?.cancel()
             exchangeJob = null
@@ -124,12 +127,19 @@ object WCoreConnectionRepository {
         }
     }
 
-    fun retry() {
-        onProfileChanged()
+    fun retry() = synchronized(lock) {
+        generation++
+        exchangeJob?.cancel()
+        coreAccessToken = null
+        coreExpiresAt = null
+        connectIfConfiguredLocked()
     }
+
+    internal fun connectionRevision(): Long = synchronized(lock) { lifecycleRevision }
 
     fun clear() {
         synchronized(lock) {
+            lifecycleRevision++
             generation++
             exchangeJob?.cancel()
             exchangeJob = null

@@ -24,6 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.network.WCoreNativeLibrary
+import com.nuvio.app.core.network.WCoreConnectionRepository
+import com.nuvio.app.core.network.WCoreConnectionStatus
+import com.nuvio.app.features.home.components.HomeNativeRowSection
 import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.ui.LocalNuvioBottomNavigationOverlayPadding
@@ -139,6 +143,9 @@ fun HomeScreen(
 
     val addonsUiState by AddonRepository.uiState.collectAsStateWithLifecycle()
     val homeUiState by HomeRepository.uiState.collectAsStateWithLifecycle()
+    val coreLibraryItems by WCoreNativeLibrary.items.collectAsStateWithLifecycle()
+    val coreStatus by WCoreConnectionRepository.status.collectAsStateWithLifecycle()
+    val coreOrigin by WCoreConnectionRepository.configuredOrigin.collectAsStateWithLifecycle()
     val homeSettingsUiState by remember {
         HomeCatalogSettingsRepository.snapshot()
         HomeCatalogSettingsRepository.uiState
@@ -314,6 +321,18 @@ fun HomeScreen(
     }
     val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
     val activeProfileId = profileState.activeProfile?.profileIndex ?: 1
+    ScreenActivityEffect(activeProfileId, coreStatus, coreOrigin) { active ->
+        if (!active) return@ScreenActivityEffect
+        if (coreStatus == WCoreConnectionStatus.Connected) {
+            WCoreNativeLibrary.refresh()
+            while (true) {
+                delay(4 * 60_000L)
+                WCoreNativeLibrary.refresh(force = true)
+            }
+        } else if (coreStatus != WCoreConnectionStatus.Connecting) {
+            WCoreNativeLibrary.clear()
+        }
+    }
     val cwCacheGeneration by ContinueWatchingEnrichmentCache.generation.collectAsStateWithLifecycle()
     var hasUserScrolledContinueWatching by remember(activeProfileId) { mutableStateOf(false) }
     var hasUserScrolledUpcoming by remember(activeProfileId) { mutableStateOf(false) }
@@ -903,7 +922,7 @@ fun HomeScreen(
             item.isCollection && collectionsMap[item.key] != null
         }
     }
-    val hasRenderableHomeRows = homeUiState.sections.isNotEmpty() || hasRenderableCollectionRows
+    val hasRenderableHomeRows = homeUiState.sections.isNotEmpty() || hasRenderableCollectionRows || coreLibraryItems.isNotEmpty()
     val showHeroSlot = shouldShowHomeHeroSlot(
         heroEnabled = homeSettingsUiState.heroEnabled,
         hasHeroItems = homeUiState.heroItems.isNotEmpty(),
@@ -1031,7 +1050,7 @@ fun HomeScreen(
                     }
                 }
 
-                !hasActiveAddons && !hasRenderableCollectionRows -> {
+                !hasActiveAddons && !hasRenderableCollectionRows && coreLibraryItems.isEmpty() -> {
                     homeContinueWatchingSections(
                         preferences = continueWatchingPreferences,
                         continueWatchingItems = continueWatchingItems,
@@ -1084,7 +1103,7 @@ fun HomeScreen(
 
                 homeUiState.sections.isEmpty() && homeUiState.heroItems.isEmpty() &&
                     (!continueWatchingPreferences.isVisible || !hasContinueWatchingRows) &&
-                    !hasRenderableCollectionRows -> {
+                    !hasRenderableCollectionRows && coreLibraryItems.isEmpty() -> {
                     item(key = "home_empty", contentType = "empty") {
                         val loadFailed = !homeUiState.errorMessage.isNullOrBlank()
                         if (networkStatusUiState.isOfflineLike && loadFailed) {
@@ -1137,6 +1156,20 @@ fun HomeScreen(
                         disintegrationRequest = continueWatchingDisintegrationRequest,
                     )
 
+                    if (coreLibraryItems.isNotEmpty()) {
+                        item(key = "wcore_jellyfin_recent", contentType = "catalog") {
+                            HomeNativeRowSection(
+                                title = "Recently added to Jellyfin",
+                                entries = coreLibraryItems,
+                                sectionPadding = homeSectionPadding,
+                                watchedKeys = watchedUiState.watchedKeys,
+                                fullyWatchedSeriesKeys = fullyWatchedSeriesKeys,
+                                onPosterClick = onPosterClick,
+                                onPosterLongClick = onPosterLongClick,
+                                modifier = Modifier.padding(bottom = 12.dp),
+                            )
+                        }
+                    }
                     keyedEnabledHomeItems.forEach { keyedSettingsItem ->
                         val settingsItem = keyedSettingsItem.value
                         if (settingsItem.isCollection) {

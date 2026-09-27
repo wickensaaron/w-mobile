@@ -192,7 +192,9 @@ fun buildPlaybackVideoId(
     episodeNumber: Int?,
     fallbackVideoId: String? = null,
 ): String =
-    if (seasonNumber != null && episodeNumber != null) {
+    if (fallbackVideoId?.matches(Regex("wm_[A-Za-z0-9_-]{8,64}")) == true) {
+        fallbackVideoId
+    } else if (seasonNumber != null && episodeNumber != null) {
         "${content.id}:$seasonNumber:$episodeNumber"
     } else {
         fallbackVideoId?.takeIf { it.isNotBlank() } ?: content.id

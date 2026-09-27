@@ -1,5 +1,6 @@
 package com.nuvio.app.core.storage
 
+import com.nuvio.app.core.network.WCoreNativeLibrary
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.sync.SyncManager
 import com.nuvio.app.core.sync.ProfileSettingsSync
@@ -41,6 +42,7 @@ import com.nuvio.app.features.watched.WatchedRepository
 
 internal object LocalAccountDataCleaner {
     fun wipe() {
+        WCoreNativeLibrary.clear()
         ensureTrackingProvidersRegistered()
         TrackingProviderRegistry.removeStoredProfiles(1..MAX_PROFILES)
         SyncManager.cancelAccountSync()

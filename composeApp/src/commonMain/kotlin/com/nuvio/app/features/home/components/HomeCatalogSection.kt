@@ -28,7 +28,7 @@ fun HomeCatalogRowSection(
 ) {
     if (sectionPadding != null) {
         HomeCatalogRowSectionContent(
-            section = section,
+            title = section.title,
             entries = entries,
             watchedKeys = watchedKeys,
             fullyWatchedSeriesKeys = fullyWatchedSeriesKeys,
@@ -41,7 +41,7 @@ fun HomeCatalogRowSection(
     } else {
         BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
             HomeCatalogRowSectionContent(
-                section = section,
+                title = section.title,
                 entries = entries,
                 watchedKeys = watchedKeys,
                 fullyWatchedSeriesKeys = fullyWatchedSeriesKeys,
@@ -57,7 +57,7 @@ fun HomeCatalogRowSection(
 
 @Composable
 private fun HomeCatalogRowSectionContent(
-    section: HomeCatalogSection,
+    title: String,
     entries: List<MetaPreview>,
     watchedKeys: Set<String>,
     fullyWatchedSeriesKeys: Set<String>,
@@ -70,7 +70,7 @@ private fun HomeCatalogRowSectionContent(
     val posterCardStyle = rememberPosterCardStyleUiState()
 
     NuvioShelfSection(
-        title = section.title,
+        title = title,
         entries = entries,
         modifier = modifier,
         headerHorizontalPadding = sectionPadding,
@@ -92,3 +92,19 @@ private fun HomeCatalogRowSectionContent(
         )
     }
 }
+
+/** Native optional shelves share the existing poster/remote interaction without pretending to be addons. */
+@Composable
+internal fun HomeNativeRowSection(
+    title: String,
+    entries: List<MetaPreview>,
+    sectionPadding: Dp,
+    watchedKeys: Set<String>,
+    fullyWatchedSeriesKeys: Set<String>,
+    onPosterClick: ((MetaPreview) -> Unit)?,
+    onPosterLongClick: ((MetaPreview) -> Unit)?,
+    modifier: Modifier = Modifier,
+) = HomeCatalogRowSectionContent(
+    title, entries, watchedKeys, fullyWatchedSeriesKeys, modifier.fillMaxWidth(), sectionPadding,
+    null, onPosterClick, onPosterLongClick,
+)

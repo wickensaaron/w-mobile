@@ -1,5 +1,7 @@
 package com.nuvio.app.features.details
 
+import com.nuvio.app.core.network.WCoreNativeLibrary
+import com.nuvio.app.core.network.isWCoreMediaId
 import co.touchlab.kermit.Logger
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
@@ -50,6 +52,25 @@ object MetaDetailsRepository {
     private val cachedMetaByRequestKey = mutableMapOf<String, CachedMetaEntry>()
 
     fun load(type: String, id: String) {
+        if (isWCoreMediaId(id)) {
+            val expectedOwner = WCoreNativeLibrary.currentScope()?.owner
+            val requestKey = "$type:$id:core:${expectedOwner}"
+            activeRequestKey = requestKey
+            val fallback = WCoreNativeLibrary.fallbackDetails(type, id)
+            _uiState.value = MetaDetailsUiState(meta = fallback, isLoading = fallback == null)
+            scope.launch {
+                val meta = fallback ?: WCoreNativeLibrary.details(type, id)
+                if (activeRequestKey == requestKey && (expectedOwner == null || WCoreNativeLibrary.isOwnerCurrent(expectedOwner))) {
+                    _uiState.value = if (meta != null) MetaDetailsUiState(meta = meta)
+                        else MetaDetailsUiState(errorMessage = "W Core is unavailable. Retry its connection in Settings.")
+                }
+                if (meta != null) {
+                    val rich = WCoreNativeLibrary.enrichDetails(type, id)
+                    if (rich != null && activeRequestKey == requestKey && expectedOwner != null && WCoreNativeLibrary.isOwnerCurrent(expectedOwner)) _uiState.value = MetaDetailsUiState(meta = rich)
+                }
+            }
+            return
+        }
         log.d { "load() called — type=$type id=$id" }
         val requestKey = "$type:$id"
         val currentState = _uiState.value
@@ -178,6 +199,9 @@ object MetaDetailsRepository {
     }
 
     fun peek(type: String, id: String): MetaDetails? {
+        if (isWCoreMediaId(id)) return _uiState.value.meta?.takeIf {
+            it.id == id && it.type == type && WCoreNativeLibrary.canPlay(id)
+        }
         val requestKey = "$type:$id"
         val currentMeta = _uiState.value.meta?.takeIf { it.type == type && it.id == id }
         if (currentMeta != null) return currentMeta
@@ -196,6 +220,7 @@ object MetaDetailsRepository {
     }
 
     suspend fun fetch(type: String, id: String, cacheResult: Boolean = true): MetaDetails? {
+        if (isWCoreMediaId(id)) return WCoreNativeLibrary.details(type, id)
         val requestKey = "$type:$id"
         cachedMetaByRequestKey[requestKey]?.let { return it.baseMeta }
 

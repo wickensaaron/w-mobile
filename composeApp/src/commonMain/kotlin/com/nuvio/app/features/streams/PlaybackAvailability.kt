@@ -4,6 +4,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nuvio.app.core.network.WCoreNativeLibrary
+import com.nuvio.app.core.network.WCoreConnectionRepository
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
@@ -33,7 +35,7 @@ internal class PlaybackAvailability(
     private val plugins: PluginsUiState,
 ) {
     fun canStream(type: String, videoId: String): Boolean =
-        hasCompatiblePlaybackSource(addons, plugins, type, videoId) ||
+        WCoreNativeLibrary.canPlay(videoId) || hasCompatiblePlaybackSource(addons, plugins, type, videoId) ||
             MetaDetailsRepository.findEmbeddedStreams(videoId).isNotEmpty()
 
     fun canPlay(
@@ -63,6 +65,8 @@ internal class PlaybackAvailability(
 
 @Composable
 internal fun rememberPlaybackAvailability(): PlaybackAvailability {
+    val coreItems by WCoreNativeLibrary.items.collectAsStateWithLifecycle()
+    val coreStatus by WCoreConnectionRepository.status.collectAsStateWithLifecycle()
     val addons by remember {
         AddonRepository.initialize()
         AddonRepository.uiState
@@ -80,7 +84,7 @@ internal fun rememberPlaybackAvailability(): PlaybackAvailability {
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.uiState
     }.collectAsStateWithLifecycle()
-    return remember(addons, plugins, downloads) {
+    return remember(addons, plugins, downloads, coreItems, coreStatus) {
         PlaybackAvailability(addons.addons, plugins)
     }
 }

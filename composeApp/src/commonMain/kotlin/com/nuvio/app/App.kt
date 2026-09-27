@@ -11,6 +11,7 @@ import coil3.compose.setSingletonImageLoaderFactory
 import coil3.request.CachePolicy
 import coil3.request.crossfade
 import coil3.svg.SvgDecoder
+import com.nuvio.app.core.poster.WCoreImageInterceptor
 import com.nuvio.app.core.poster.CustomPosterFallbackInterceptor
 import com.nuvio.app.core.ui.NativeProfileSwitcherController
 import com.nuvio.app.core.ui.NuvioTheme
@@ -77,6 +78,7 @@ internal fun AppEnvironment(content: @Composable () -> Unit) {
                 .diskCachePolicy(CachePolicy.ENABLED)
                 .memoryCachePolicy(CachePolicy.ENABLED)
                 .components {
+                    add(WCoreImageInterceptor())
                     add(CustomPosterFallbackInterceptor())
                     add(SvgDecoder.Factory())
                     add(

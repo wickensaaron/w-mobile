@@ -908,7 +908,7 @@ object WatchProgressRepository {
             lastStreamTitle = cached?.lastStreamTitle,
             lastStreamSubtitle = cached?.lastStreamSubtitle,
             pauseDescription = cached?.pauseDescription,
-            lastSourceUrl = cached?.lastSourceUrl,
+            lastSourceUrl = scrubCoreSourceUrl(cached?.providerAddonId, cached?.lastSourceUrl),
             isCompleted = isWatchProgressComplete(position, duration, false),
             progressKey = resolvedProgressKey(),
         )
@@ -951,7 +951,7 @@ object WatchProgressRepository {
 
         localByProgressKey.forEach { (progressKey, localEntry) ->
             if (progressKey !in effectiveDirtyKeys) return@forEach
-            merged[progressKey] = localEntry
+            merged[progressKey] = localEntry.scrubCoreSource()
         }
 
         return merged
@@ -1287,7 +1287,7 @@ object WatchProgressRepository {
             lastStreamTitle = session.lastStreamTitle,
             lastStreamSubtitle = session.lastStreamSubtitle,
             pauseDescription = session.pauseDescription,
-            lastSourceUrl = session.lastSourceUrl,
+            lastSourceUrl = scrubCoreSourceUrl(session.providerAddonId, session.lastSourceUrl),
             isCompleted = isCompleted,
         ).normalizedCompletion()
 
