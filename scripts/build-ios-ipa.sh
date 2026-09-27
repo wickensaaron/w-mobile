@@ -2,6 +2,15 @@
 
 set -euo pipefail
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "An iPhone IPA requires macOS with Xcode. Prepare locally; run this script on the authorised Mac builder." >&2
+    exit 1
+fi
+if ! command -v xcodebuild >/dev/null || ! xcodebuild -version >/dev/null 2>&1; then
+    echo "Select a working Xcode installation before building the iPhone IPA." >&2
+    exit 1
+fi
+
 repository_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 version_file="${repository_root}/iosApp/Configuration/Version.xcconfig"
 version="${1:-$(sed -nE 's/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' "${version_file}" | head -n 1)}"
@@ -29,6 +38,9 @@ if [[ ! "${version}" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
 fi
 
 cd "${repository_root}"
+mkdir -p "${output_directory}"
+output_directory="$(cd "${output_directory}" && pwd -P)"
+build_log="${output_directory}/W-Media-Player-${version}-full-${configuration_slug}-build.log"
 build_environment=(
     env
     NUVIO_IOS_DISTRIBUTION=full
@@ -52,7 +64,7 @@ fi
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY= \
-    build
+    build 2>&1 | tee "${build_log}"
 
 products_directory="${derived_data}/Build/Products/${configuration}-iphoneos"
 app_path=""

@@ -3,14 +3,19 @@ package com.nuvio.app.features.settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +48,7 @@ import com.nuvio.app.features.livetv.LiveTvXtreamSettings
 import com.nuvio.app.features.livetv.rememberLiveTvPlaylistFilePicker
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.core.ui.nuvio
+import com.nuvio.app.core.ui.nuvioSafeBottomPadding
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.time.Clock
 import com.nuvio.app.core.format.formatLocalHourMinute
@@ -68,9 +74,11 @@ internal fun LiveTvTabScreen() {
             )
         } else {
             val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            val bottomPadding = nuvioSafeBottomPadding(24.dp)
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = statusBarPadding + 20.dp, bottom = 96.dp),
+                modifier = Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
+                contentPadding = PaddingValues(top = statusBarPadding + 20.dp, bottom = bottomPadding),
             ) {
                 item(key = "live_tv_tab_title") {
                     Text("Live TV", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
@@ -148,7 +156,7 @@ internal fun LazyListScope.liveTvSettingsContent(
             TextButton(onClick = { onFavoritesOnlyChange(!favoritesOnly) }) {
                 Text(if (favoritesOnly) "Show all channels" else "Show favourites only")
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (guideMode) {
                     OutlinedButton(onClick = { onGuideModeChange(false) }) { Text("Channels") }
                     Button(onClick = {}) { Text("Guide") }
@@ -226,7 +234,7 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 LiveTvRepository.addPlaylistUrl(playlistUrl)
                 playlistUrl = ""
@@ -247,7 +255,7 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
         OutlinedTextField(xtreamServer, { xtreamServer = it }, label = { Text("Server URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(xtreamUser, { xtreamUser = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(xtreamPassword, { xtreamPassword = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { LiveTvRepository.saveXtreamSettings(LiveTvXtreamSettings(xtreamServer, xtreamUser, xtreamPassword)) },
                 enabled = xtreamServer.isNotBlank() && xtreamUser.isNotBlank() && xtreamPassword.isNotBlank(),
@@ -262,7 +270,7 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
         OutlinedTextField(stalkerMac, { stalkerMac = it }, label = { Text("MAC address") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(stalkerUser, { stalkerUser = it }, label = { Text("Username (if required)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(stalkerPassword, { stalkerPassword = it }, label = { Text("Password (if required)") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { LiveTvRepository.saveStalkerSettings(LiveTvStalkerSettings(stalkerPortal, stalkerMac, stalkerUser, stalkerPassword)) },
                 enabled = stalkerPortal.isNotBlank() && stalkerMac.isNotBlank(),
@@ -274,7 +282,7 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
         HorizontalDivider()
         Text("Programme guide", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(guideUrl, { guideUrl = it }, label = { Text("XMLTV URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { LiveTvRepository.saveGuideUrl(guideUrl) }) { Text("Save guide") }
             OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.guideUrl.isNotBlank()) { Text("Refresh") }
         }

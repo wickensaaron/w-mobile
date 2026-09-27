@@ -8,18 +8,21 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -44,6 +47,7 @@ import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvRepository
 import com.nuvio.app.features.livetv.LiveTvUiState
 import com.nuvio.app.core.format.formatLocalHourMinute
+import com.nuvio.app.core.ui.nuvioSafeBottomPadding
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
 
@@ -76,16 +80,17 @@ internal fun LiveTvGuideGrid(
             (searchQuery.isBlank() || channel.name.contains(searchQuery.trim(), true) ||
                 channel.group?.contains(searchQuery.trim(), true) == true)
     }
-    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val bottom = nuvioSafeBottomPadding(24.dp)
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = top + 20.dp, bottom = 96.dp),
+        modifier = Modifier.fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top)),
+        contentPadding = PaddingValues(top = 20.dp, bottom = bottom),
     ) {
         item(key = "guide_controls") {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Live TV guide", style = MaterialTheme.typography.headlineMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onChannelsClick) { Text("Channels") }
                     Button(onClick = {}) { Text("Guide") }
                     OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.guideUrl.isNotBlank()) { Text("Refresh") }
@@ -106,8 +111,8 @@ internal fun LiveTvGuideGrid(
                 Text("Times shown in your device time zone. Swipe the timeline to see later programmes.", style = MaterialTheme.typography.bodySmall)
             }
         }
-        item(key = "guide_time_axis") {
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
+        stickyHeader(key = "guide_time_axis") {
+            Row(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(top = 14.dp)) {
                 Box(modifier = Modifier.width(channelWidth).height(42.dp))
                 Row(modifier = Modifier.weight(1f).horizontalScroll(scrollState)) {
                     repeat(guideHours * 2) { slot ->

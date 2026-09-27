@@ -5,6 +5,7 @@ workflows:
     max_build_duration: 120
     environment:
       xcode: latest
+      java: 17
       vars:
         IOS_CONFIGURATION: Release
         NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
@@ -23,4 +24,5 @@ workflows:
         script: ./scripts/build-ios-ipa.sh
     artifacts:
       - build/ios-ipa/*.ipa
+      - build/ios-ipa/*-build.log
       - /tmp/xcodebuild_logs/*.log
