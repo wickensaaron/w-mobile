@@ -19,6 +19,7 @@ internal fun enrichWatchProgressEntry(
     current: WatchProgressEntry,
     meta: MetaDetails,
 ): WatchProgressEntry {
+    if (current.isUnsupportedMobileLiveTvProgress()) return current
     val episodeVideo = if (current.seasonNumber != null && current.episodeNumber != null) {
         meta.videos.firstOrNull { video ->
             video.season == current.seasonNumber && video.episode == current.episodeNumber
@@ -45,10 +46,12 @@ internal fun enrichWatchProgressEntry(
 }
 
 internal fun WatchProgressEntry.needsRemoteMetadataEnrichment(): Boolean =
-    title.isBlank() ||
+    !isUnsupportedMobileLiveTvProgress() && (
+        title.isBlank() ||
         title.equals(parentMetaId, ignoreCase = true) ||
         poster.isNullOrBlank() ||
         background.isNullOrBlank()
+    )
 
 internal class ProviderProgressMetadataOverlay {
     private val lock = SynchronizedObject()

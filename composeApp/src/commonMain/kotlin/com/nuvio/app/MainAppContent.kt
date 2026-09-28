@@ -170,6 +170,7 @@ import com.nuvio.app.features.watchprogress.ResumePromptRepository
 import com.nuvio.app.features.watchprogress.WatchProgressRepository
 import com.nuvio.app.features.watchprogress.WatchProgressSourceCoordinator
 import com.nuvio.app.features.watchprogress.continueWatchingItemKey
+import com.nuvio.app.features.watchprogress.isUnsupportedMobileLiveTvProgress
 import com.nuvio.app.features.watchprogress.nextUpDismissKey
 import com.nuvio.app.features.watchprogress.toContinueWatchingItem
 import com.nuvio.app.navigation.*
@@ -1097,21 +1098,25 @@ internal fun MainAppContent(
         }
 
         fun canPlayContinueWatching(item: ContinueWatchingItem): Boolean =
-            item.isCloudLibraryContinueWatchingItem() || playbackAvailability.canPlay(
-                type = item.parentMetaType,
-                videoId = item.videoId,
-                parentMetaId = item.parentMetaId,
-                seasonNumber = item.seasonNumber,
-                episodeNumber = item.episodeNumber,
+            !item.isUnsupportedMobileLiveTvProgress() && (
+                item.isCloudLibraryContinueWatchingItem() || playbackAvailability.canPlay(
+                    type = item.parentMetaType,
+                    videoId = item.videoId,
+                    parentMetaId = item.parentMetaId,
+                    seasonNumber = item.seasonNumber,
+                    episodeNumber = item.episodeNumber,
+                )
             )
 
         fun canSelectContinueWatchingStreams(item: ContinueWatchingItem): Boolean =
-            !item.isCloudLibraryContinueWatchingItem() &&
+            !item.isUnsupportedMobileLiveTvProgress() && !item.isCloudLibraryContinueWatchingItem() &&
                 playbackAvailability.canStream(item.parentMetaType, item.videoId)
 
         val openContinueWatching: (ContinueWatchingItem, Boolean, Boolean) -> Unit = { item, manualSelection, startFromBeginning ->
             resumePromptItem = null
-            if (item.isCloudLibraryContinueWatchingItem()) {
+            if (item.isUnsupportedMobileLiveTvProgress()) {
+                NuvioToastController.show(playbackUnavailableMessage)
+            } else if (item.isCloudLibraryContinueWatchingItem()) {
                 coroutineScope.launch {
                     when (
                         val lookup = CloudLibraryRepository.findPlaybackTargetForProgressResult(
@@ -1202,10 +1207,12 @@ internal fun MainAppContent(
         }
 
         val onContinueWatchingLongPress: (ContinueWatchingItem) -> Unit = { item ->
-            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-            val zoomAnchor = PosterZoomAnchorHolder.consume()
-            selectedContinueWatchingZoomAnchor = zoomAnchor
-            selectedContinueWatchingForActions = item
+            if (!item.isUnsupportedMobileLiveTvProgress()) {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                val zoomAnchor = PosterZoomAnchorHolder.consume()
+                selectedContinueWatchingZoomAnchor = zoomAnchor
+                selectedContinueWatchingForActions = item
+            }
         }
 
         LaunchedEffect(activePlaybackProfileId, navController) {
@@ -1820,7 +1827,7 @@ internal fun MainAppContent(
                 selectedContinueWatchingZoomAnchor?.let { anchor ->
                     key(item.videoId, anchor) {
                         val showManualPlayOption = StreamAutoPlayPolicy.isEffectivelyEnabled(playerSettingsUiState) && canSelectContinueWatchingStreams(item)
-                        val showDetailsOption = !item.isCloudLibraryContinueWatchingItem()
+                        val showDetailsOption = !item.isUnsupportedMobileLiveTvProgress() && !item.isCloudLibraryContinueWatchingItem()
                         NuvioPosterZoomActionOverlay(
                             imageUrl = cloudLibraryDisplayArtworkUrl(anchor.imageUrl ?: item.poster ?: item.imageUrl),
                             title = item.title,
@@ -1891,10 +1898,12 @@ internal fun MainAppContent(
                 item = selectedContinueWatchingForActions.takeIf { selectedContinueWatchingZoomAnchor == null },
                 showManualPlayOption = StreamAutoPlayPolicy.isEffectivelyEnabled(playerSettingsUiState) &&
                     selectedContinueWatchingForActions?.let(::canSelectContinueWatchingStreams) == true,
-                showDetailsOption = selectedContinueWatchingForActions?.isCloudLibraryContinueWatchingItem() != true,
+                showDetailsOption = selectedContinueWatchingForActions?.let { item ->
+                    !item.isUnsupportedMobileLiveTvProgress() && !item.isCloudLibraryContinueWatchingItem()
+                } == true,
                 onDismiss = { selectedContinueWatchingForActions = null },
                 onOpenDetails = {
-                    selectedContinueWatchingForActions?.let { item ->
+                    selectedContinueWatchingForActions?.takeUnless { it.isUnsupportedMobileLiveTvProgress() }?.let { item ->
                         navController.navigate(
                             DetailRoute(
                                 type = item.parentMetaType,

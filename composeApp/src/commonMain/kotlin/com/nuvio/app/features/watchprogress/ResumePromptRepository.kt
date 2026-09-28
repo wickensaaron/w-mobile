@@ -27,6 +27,7 @@ object ResumePromptRepository {
 
         WatchProgressRepository.ensureLoaded()
         val entry = WatchProgressRepository.progressForVideo(videoId) ?: return null
+        if (entry.isUnsupportedMobileLiveTvProgress()) return null
 
         if (entry.isResumable) {
             return entry.toContinueWatchingItem()

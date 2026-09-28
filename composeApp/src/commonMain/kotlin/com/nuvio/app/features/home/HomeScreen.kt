@@ -76,6 +76,8 @@ import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesUiState
 import com.nuvio.app.features.watchprogress.ContinueWatchingItem
 import com.nuvio.app.features.watchprogress.ContinueWatchingSortMode
 import com.nuvio.app.features.watchprogress.isMalformedNextUpSeedContentId
+import com.nuvio.app.features.watchprogress.isUnsupportedMobileLiveTvIdentity
+import com.nuvio.app.features.watchprogress.isUnsupportedMobileLiveTvProgress
 import com.nuvio.app.features.watchprogress.isSeriesTypeForContinueWatching
 import com.nuvio.app.features.watchprogress.nextUpDismissKey
 import com.nuvio.app.features.watchprogress.parseReleaseDateToEpochMs
@@ -226,7 +228,8 @@ fun HomeScreen(
         continueWatchingCutoffEpochMs,
     ) {
         val visibleProviderEntries = watchProgressUiState.entries.filterNot { entry ->
-            entry.parentMetaId in watchProgressUiState.hiddenContentIds ||
+            entry.isUnsupportedMobileLiveTvProgress() ||
+                entry.parentMetaId in watchProgressUiState.hiddenContentIds ||
                 WatchProgressRepository.isDroppedShow(entry.parentMetaId)
         }
         filterEntriesForContinueWatchingWindow(
@@ -414,6 +417,9 @@ fun HomeScreen(
         val nowEpochMs = WatchProgressClock.nowEpochMs()
         cachedNextUpReleases.mapNotNull { cachedRelease ->
             val cached = cachedRelease.item
+            if (isUnsupportedMobileLiveTvIdentity(cached.contentType, cached.contentId, cached.videoId)) {
+                return@mapNotNull null
+            }
             if (
                 shouldValidateMissingNextUpSeeds &&
                 cached.contentId !in activeNextUpSeedContentIds
@@ -474,6 +480,7 @@ fun HomeScreen(
     ) {
         cachedSnapshots.second.mapNotNull { cached ->
             if (
+                isUnsupportedMobileLiveTvIdentity(cached.contentType, cached.contentId, cached.videoId) ||
                 cached.contentId in watchProgressUiState.hiddenContentIds ||
                 WatchProgressRepository.isDroppedShow(cached.contentId)
             ) {
@@ -1321,6 +1328,7 @@ internal fun buildHomeNextUpSeedCandidates(
 ): List<CompletedSeriesCandidate> {
     val progressSeeds = progressEntries
         .asSequence()
+        .filterNot(WatchProgressEntry::isUnsupportedMobileLiveTvProgress)
         .filterNot { entry -> isContentHidden(entry.parentMetaId) }
         .filter { entry -> entry.parentMetaType.isSeriesTypeForContinueWatching() }
         .filter { entry -> entry.seasonNumber != null && entry.episodeNumber != null && entry.seasonNumber != 0 }
@@ -1331,7 +1339,8 @@ internal fun buildHomeNextUpSeedCandidates(
         emptyList()
     } else {
         watchedItems.filter { item ->
-            !isContentHidden(item.id) &&
+            !isUnsupportedMobileLiveTvIdentity(item.type, item.id) &&
+                !isContentHidden(item.id) &&
                 item.type.isSeriesTypeForContinueWatching() &&
                 item.season != null &&
                 item.episode != null &&
@@ -1601,7 +1610,7 @@ internal fun buildHomeContinueWatchingItems(
 
     val candidates = buildList {
         addAll(
-            visibleEntries.map { entry ->
+            visibleEntries.filterNot(WatchProgressEntry::isUnsupportedMobileLiveTvProgress).map { entry ->
                 val liveItem = entry.toContinueWatchingItem()
                 HomeContinueWatchingCandidate(
                     lastUpdatedEpochMs = entry.lastUpdatedEpochMs,
@@ -1867,7 +1876,7 @@ private fun CompletedSeriesCandidate.toContinueWatchingSeed(meta: com.nuvio.app.
     )
 
 private fun ContinueWatchingItem.shouldDisplayInContinueWatching(): Boolean =
-    isNextUp || progressFraction < 0.995f
+    !isUnsupportedMobileLiveTvProgress() && (isNextUp || progressFraction < 0.995f)
 
 private fun CachedNextUpItem.toContinueWatchingItem(
     releaseEpochMs: Long?,
