@@ -237,6 +237,14 @@ enum NuvioAppTab: String, CaseIterable, Hashable {
     case liveTv = "LiveTv"
     case settings = "Settings"
 
+    static func availableTabs(liveTvVisible: Bool) -> [NuvioAppTab] {
+        allCases.filter { liveTvVisible || $0 != .liveTv }
+    }
+
+    func availableSelection(liveTvVisible: Bool) -> NuvioAppTab {
+        self == .liveTv && !liveTvVisible ? .home : self
+    }
+
     var fallbackTitle: String {
         String(localized: String.LocalizationValue(rawValue))
     }
@@ -543,7 +551,11 @@ final class NativeProfileTabInteractionCoordinator: NSObject, UIGestureRecognize
 @available(iOS 16.0, *)
 @MainActor
 final class AppNavigationCoordinator: ObservableObject {
+    private static let liveTvVisibleKey = "NuvioLiveTvNavigationVisible"
+    private static let liveTvVisibilityDidChange = Notification.Name("NuvioLiveTvNavigationVisibilityDidChange")
+
     @Published var selectedTab: NuvioAppTab = .home
+    @Published private(set) var isLiveTvVisible = false
     @Published private(set) var isMainContentMounted = false
     @Published private(set) var isMainContentVisible = false
     @Published private(set) var isAppReady = false
@@ -560,12 +572,47 @@ final class AppNavigationCoordinator: ObservableObject {
     let appGateController = AppGateController()
     let profileSwitcherController = NativeProfileSwitcherController()
     let profileTabInteraction = NativeProfileTabInteractionCoordinator()
+    private var liveTvVisibilityObserver: NSObjectProtocol?
 
     init() {
         profileTabInteraction.onLongPress = { [weak self] in
             guard let self, self.isAppReady else { return }
             self.isProfileSwitcherPresented = true
         }
+        refreshLiveTvVisibility()
+        liveTvVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: Self.liveTvVisibilityDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshLiveTvVisibility()
+            }
+        }
+    }
+
+    deinit {
+        if let liveTvVisibilityObserver {
+            NotificationCenter.default.removeObserver(liveTvVisibilityObserver)
+        }
+    }
+
+    var availableTabs: [NuvioAppTab] {
+        NuvioAppTab.availableTabs(liveTvVisible: isLiveTvVisible)
+    }
+
+    private func availableSelection(_ tab: NuvioAppTab) -> NuvioAppTab {
+        tab.availableSelection(liveTvVisible: isLiveTvVisible)
+    }
+
+    private func refreshLiveTvVisibility() {
+        let visible = UserDefaults.standard.bool(forKey: Self.liveTvVisibleKey)
+        // Select a retained tab before removing Live TV. Keep every coordinator's
+        // navigation path so toggling visibility does not reset native history.
+        if !visible && selectedTab == .liveTv {
+            selectedTab = .home
+        }
+        isLiveTvVisible = visible
     }
 
     private var allCoordinators: [TabNavigationCoordinator] {
@@ -583,7 +630,8 @@ final class AppNavigationCoordinator: ObservableObject {
     }
 
     func activateTab(named tabName: String) {
-        guard let tab = NuvioAppTab.from(kotlinName: tabName) else { return }
+        guard let requestedTab = NuvioAppTab.from(kotlinName: tabName) else { return }
+        let tab = availableSelection(requestedTab)
         if tab == .home || isAppReady {
             selectedTab = tab
         }
@@ -650,9 +698,10 @@ final class AppNavigationCoordinator: ObservableObject {
             AppKt.disposeRoute(route: route)
             return
         }
-        let targetTab = NuvioAppTab.from(kotlinName: route.preferredTabName)
+        let requestedTab = NuvioAppTab.from(kotlinName: route.preferredTabName)
             ?? tab(for: origin)
             ?? selectedTab
+        let targetTab = availableSelection(requestedTab)
         let target = coordinator(for: targetTab)
         selectedTab = targetTab
         target.push(route, launchSingleTop: launchSingleTop)
@@ -663,10 +712,11 @@ final class AppNavigationCoordinator: ObservableObject {
             AppKt.disposeRoute(route: route)
             return
         }
-        if let targetTab = tab(for: target) {
+        let destination = tab(for: target).map { coordinator(for: availableSelection($0)) } ?? target
+        if let targetTab = tab(for: destination) {
             selectedTab = targetTab
         }
-        target.replace(route)
+        destination.replace(route)
     }
 }
 
@@ -1227,6 +1277,7 @@ struct NativeNavContentView: View {
         Binding(
             get: { appCoordinator.selectedTab },
             set: { newTab in
+                guard appCoordinator.availableTabs.contains(newTab) else { return }
                 if newTab == .settings &&
                     appCoordinator.profileTabInteraction.suppressesProfileSelection {
                     return
@@ -1244,7 +1295,7 @@ struct NativeNavContentView: View {
 
     private var legacyTabs: some View {
         TabView(selection: tabSelection) {
-            ForEach(NuvioAppTab.allCases, id: \.self) { tab in
+            ForEach(appCoordinator.availableTabs, id: \.self) { tab in
                 TabContentView(
                     tab: tab,
                     usesNativeTabBar: usesNativeTabBar,
@@ -1277,7 +1328,7 @@ struct NativeNavContentView: View {
     @available(iOS 26.0, *)
     private var nativeTabs: some View {
         TabView(selection: tabSelection) {
-            ForEach(NuvioAppTab.allCases, id: \.self) { tab in
+            ForEach(appCoordinator.availableTabs, id: \.self) { tab in
                 if tab == .settings {
                     Tab(value: tab) {
                         TabContentView(

@@ -85,6 +85,7 @@ if [[ -z "${app_path}" ]]; then
 fi
 
 display_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "${app_path}/Info.plist" 2>/dev/null || true)"
+bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app_path}/Info.plist")"
 if [[ "${display_name}" != "W Media Player" ]]; then
     echo "Built iOS app has unexpected display name: ${display_name}." >&2
     exit 1
@@ -142,5 +143,27 @@ temporary_ipa="${package_root}/W-Media-Player-${version}-full-${configuration_sl
 )
 unzip -tq "${temporary_ipa}"
 mv "${temporary_ipa}" "${ipa_path}"
+
+# Keep the exact source and Apple toolchain alongside the artifact. Public
+# runtime keys and private account data are deliberately excluded.
+ipa_name="$(basename "${ipa_path}")"
+checksum="$(shasum -a 256 "${ipa_path}" | awk '{print $1}')"
+printf '%s  %s\n' "${checksum}" "${ipa_name}" > "${ipa_path}.sha256"
+build_info="${ipa_path%.ipa}-build-info.txt"
+{
+    printf 'Application: W Media Player\nDistribution: full\nConfiguration: %s\n' "${configuration}"
+    printf 'Version: %s\nBundle identifier: %s\n' "${built_version}" "${bundle_identifier}"
+    printf 'Source commit: %s\n' "$(git rev-parse HEAD)"
+    if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        printf 'Source status: contains local tracked changes\n'
+    else
+        printf 'Source status: clean tracked files\n'
+    fi
+    printf 'MPVKit commit: %s\n' "$(git -C MPVKit rev-parse HEAD)"
+    printf 'Application architectures: %s\nWidget architectures: %s\n' "${architectures}" "${widget_architectures}"
+    printf 'iOS SDK: %s\n' "$(xcrun --sdk iphoneos --show-sdk-version)"
+    xcodebuild -version
+    printf 'Signing: unsigned\nSHA-256: %s\n' "${checksum}"
+} > "${build_info}"
 
 echo "Created ${ipa_path}"

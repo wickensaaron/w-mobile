@@ -6,6 +6,8 @@ workflows:
     environment:
       xcode: latest
       java: 17
+      groups:
+        - w_media_public
       vars:
         IOS_CONFIGURATION: Release
         NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
@@ -14,10 +16,11 @@ workflows:
     scripts:
       - name: Check public Supabase configuration
         script: |
-          if [ -z "${NUVIO_SUPABASE_ANON_KEY:-}" ]; then
-            echo "Set NUVIO_SUPABASE_ANON_KEY in Codemagic application environment variables." >&2
+          if [ -e local.properties ]; then
+            echo "The Codemagic IPA checkout must use public environment configuration, without local.properties overrides." >&2
             exit 1
           fi
+          bash ./scripts/check-ios-runtime-config.sh
       - name: Prepare iOS dependencies
         script: ./scripts/prepare-ios-dependencies.sh
       - name: Build unsigned SideStore IPA
@@ -25,4 +28,6 @@ workflows:
     artifacts:
       - build/ios-ipa/*.ipa
       - build/ios-ipa/*-build.log
+      - build/ios-ipa/*-build-info.txt
+      - build/ios-ipa/*.ipa.sha256
       - /tmp/xcodebuild_logs/*.log
