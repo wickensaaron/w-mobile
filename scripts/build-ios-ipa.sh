@@ -47,11 +47,44 @@ build_environment=(
     CLANG_MODULE_CACHE_PATH="${clang_module_cache}"
     SWIFTPM_MODULECACHE_OVERRIDE="${swiftpm_module_cache}"
 )
+xcode_build_settings=()
 if [[ -n "${NUVIO_GRADLE_JVMARGS:-}" ]]; then
-    build_environment+=("ORG_GRADLE_PROJECT_org.gradle.jvmargs=${NUVIO_GRADLE_JVMARGS}")
+    xcode_build_settings+=("NUVIO_GRADLE_JVMARGS=${NUVIO_GRADLE_JVMARGS}")
 fi
 if [[ -n "${NUVIO_KOTLIN_NATIVE_JVMARGS:-}" ]]; then
-    build_environment+=("ORG_GRADLE_PROJECT_kotlin.native.jvmArgs=${NUVIO_KOTLIN_NATIVE_JVMARGS}")
+    xcode_build_settings+=("NUVIO_KOTLIN_NATIVE_JVMARGS=${NUVIO_KOTLIN_NATIVE_JVMARGS}")
+fi
+if [[ -n "${NUVIO_GRADLE_MAX_WORKERS:-}" ]]; then
+    if [[ ! "${NUVIO_GRADLE_MAX_WORKERS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "NUVIO_GRADLE_MAX_WORKERS must be a positive integer." >&2
+        exit 1
+    fi
+    xcode_build_settings+=("NUVIO_GRADLE_MAX_WORKERS=${NUVIO_GRADLE_MAX_WORKERS}")
+fi
+gradle_init_directory=""
+if [[ -n "${NUVIO_GRADLE_EXPECTED_HEAP_MB:-}" ]]; then
+    if [[ ! "${NUVIO_GRADLE_EXPECTED_HEAP_MB}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "NUVIO_GRADLE_EXPECTED_HEAP_MB must be a positive integer." >&2
+        exit 1
+    fi
+    echo "Mac physical memory (bytes): $(sysctl -n hw.memsize)"
+    echo "Requested Gradle heap: ${NUVIO_GRADLE_EXPECTED_HEAP_MB} MiB"
+    gradle_init_directory="$(mktemp -d "${TMPDIR:-/tmp}/w-media-ios-gradle.XXXXXX")"
+    trap '[[ -z "${gradle_init_directory}" ]] || rm -rf "${gradle_init_directory}"' EXIT
+    cat > "${gradle_init_directory}/verify-heap.gradle" <<'EOF'
+gradle.settingsEvaluated {
+    def expectedMiB = System.getenv('NUVIO_GRADLE_EXPECTED_HEAP_MB').toLong()
+    def actualMiB = Runtime.getRuntime().maxMemory() / (1024L * 1024L)
+    println("W Media Player effective Gradle heap: ${actualMiB} MiB (requested ${expectedMiB} MiB)")
+    if (actualMiB < expectedMiB * 0.9) {
+        throw new GradleException('The requested cloud Gradle heap did not reach the daemon; stopping before native compilation.')
+    }
+}
+EOF
+    xcode_build_settings+=(
+        "NUVIO_GRADLE_EXPECTED_HEAP_MB=${NUVIO_GRADLE_EXPECTED_HEAP_MB}"
+        "NUVIO_GRADLE_INIT_SCRIPT=${gradle_init_directory}/verify-heap.gradle"
+    )
 fi
 "${build_environment[@]}" \
     xcodebuild \
@@ -64,6 +97,7 @@ fi
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY= \
+    "${xcode_build_settings[@]}" \
     build 2>&1 | tee "${build_log}"
 
 products_directory="${derived_data}/Build/Products/${configuration}-iphoneos"
@@ -131,7 +165,7 @@ fi
 mkdir -p "${output_directory}"
 output_directory="$(cd "${output_directory}" && pwd -P)"
 package_root="$(mktemp -d "${TMPDIR:-/tmp}/nuvio-ios-ipa.XXXXXX")"
-trap 'rm -rf "${package_root}"' EXIT
+trap 'rm -rf "${package_root}"; [[ -z "${gradle_init_directory}" ]] || rm -rf "${gradle_init_directory}"' EXIT
 mkdir -p "${package_root}/Payload"
 ditto "${app_path}" "${package_root}/Payload/$(basename "${app_path}")"
 
