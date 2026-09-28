@@ -27,7 +27,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -40,14 +39,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvAccountGuideRow
 import com.nuvio.app.features.livetv.LiveTvProgramme
 import com.nuvio.app.features.livetv.filterLiveTvAccountGuideRows
@@ -73,7 +70,6 @@ internal fun LiveTvGuideGrid(
     onFavoritesOnlyChange: (Boolean) -> Unit,
     onChannelsClick: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
     var now by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -102,14 +98,6 @@ internal fun LiveTvGuideGrid(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onChannelsClick) { Text("Sources & settings") }
                     OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.hasGuideSources) { Text("Refresh") }
-                    if (uiState.accountGuideOwner != null) {
-                        OutlinedButton(onClick = {
-                            val owner = uiState.accountGuideOwner ?: return@OutlinedButton
-                            runCatching { uriHandler.openUri("${owner.backend}/functions/v1/tv-logins-exchange?organise=live-tv&profile=${owner.profile}") }
-                        }) { Text("Organise channels") }
-                        OutlinedButton(onClick = LiveTvRepository::restoreAccountGuidePreferences,
-                            enabled = !uiState.isAccountGuideSyncing && !uiState.isAccountGuideSaving) { Text("Refresh choices") }
-                    }
                 }
                 OutlinedTextField(
                     value = searchQuery,
