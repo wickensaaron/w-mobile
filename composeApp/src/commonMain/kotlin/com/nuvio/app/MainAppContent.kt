@@ -229,6 +229,9 @@ internal fun MainAppContent(
         val appUpdaterController = rememberAppUpdaterController()
         if (ownsAppRuntime) {
             remember {
+                LiveTvRepository.startObserving()
+            }
+            remember {
                 EpisodeReleaseNotificationsRepository.ensureLoaded()
             }
             remember {
@@ -1217,6 +1220,7 @@ internal fun MainAppContent(
 
         LaunchedEffect(activePlaybackProfileId, navController) {
             LiveTvRepository.playbackRequests.collect { channel ->
+                if (!LiveTvRepository.isCurrentPlaybackRequest(channel)) return@collect
                 val launchId = PlayerLaunchStore.put(
                     PlayerLaunch(
                         profileId = activePlaybackProfileId,

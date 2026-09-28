@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvRepository
+import com.nuvio.app.features.livetv.programmesFor
 import com.nuvio.app.features.livetv.LiveTvUiState
 import com.nuvio.app.features.livetv.LiveTvStalkerSettings
 import com.nuvio.app.features.livetv.LiveTvXtreamSettings
@@ -284,12 +285,21 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
         OutlinedTextField(guideUrl, { guideUrl = it }, label = { Text("XMLTV URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { LiveTvRepository.saveGuideUrl(guideUrl) }) { Text("Save guide") }
-            OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.guideUrl.isNotBlank()) { Text("Refresh") }
+            OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.hasGuideSources) { Text("Refresh") }
         }
         if (uiState.isGuideLoading) Text("Loading programme guide…")
         uiState.guideErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = LiveTvRepository::refresh) { Text("Refresh channels") }
+        }
+        Text("Account sources", style = MaterialTheme.typography.titleMedium)
+        if (uiState.isRestoringAccountSources) Text("Restoring your sources…")
+        uiState.accountSources.forEach { source ->
+            Text("${source.name} · ${source.type}${if (source.enabled) "" else " · Disabled"}")
+        }
+        uiState.accountSourceErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        OutlinedButton(onClick = LiveTvRepository::restoreAccountSources, enabled = !uiState.isRestoringAccountSources) {
+            Text("Restore account sources")
         }
     }
 }
@@ -297,12 +307,7 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
 @Composable
 private fun LiveTvChannelRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
     val now = Clock.System.now().toEpochMilliseconds()
-    val guideKey = channel.guideId ?: channel.name
-    val guide = remember(uiState.programmes, guideKey) {
-        uiState.programmes[guideKey]
-            ?: uiState.programmes.entries.firstOrNull { it.key.equals(guideKey, ignoreCase = true) }?.value
-            ?: emptyList()
-    }
+    val guide = remember(uiState.programmes, channel) { uiState.programmesFor(channel) }
     val current = guide.firstOrNull { it.startEpochMs <= now && it.stopEpochMs > now }
     val next = guide.firstOrNull { it.startEpochMs > now }
     Column(modifier = Modifier.fillMaxWidth().clickable { LiveTvRepository.requestPlayback(channel) }.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -322,10 +327,7 @@ private fun LiveTvChannelRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
 @Composable
 private fun LiveTvGuideRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
     val now = Clock.System.now().toEpochMilliseconds()
-    val guideKey = channel.guideId ?: channel.name
-    val programmes = uiState.programmes[guideKey]
-        ?: uiState.programmes.entries.firstOrNull { it.key.equals(guideKey, ignoreCase = true) }?.value
-        ?: emptyList()
+    val programmes = uiState.programmesFor(channel)
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             channel.name,

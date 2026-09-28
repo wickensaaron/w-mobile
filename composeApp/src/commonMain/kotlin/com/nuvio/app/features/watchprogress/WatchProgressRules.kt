@@ -239,8 +239,12 @@ private fun WatchProgressEntry.toDomainProgressRecord(): WatchingProgressRecord 
     }
 
 
-/** Remove historical signed Core playback credentials while retaining ordinary addon links. */
+/** Remove Core and Live TV playback credentials while retaining ordinary addon links. */
 internal fun scrubCoreSourceUrl(providerAddonId: String?, url: String?): String? {
+    if (providerAddonId?.trim()?.lowercase() in setOf(
+            "live", "livetv", "live-tv", "live_tv", "catchup", "catchup-partial",
+            "live-tv-replay", "live-tv-catchup",
+        )) return null
     if (providerAddonId == "wcore" || providerAddonId?.startsWith("wcore:", ignoreCase = true) == true) return null
     if (url == null) return null
     if (url.startsWith("wcore-source://", ignoreCase = true)) return null
@@ -252,7 +256,7 @@ internal fun scrubCoreSourceUrl(providerAddonId: String?, url: String?): String?
 }
 
 internal fun WatchProgressEntry.scrubCoreSource(): WatchProgressEntry =
-    copy(lastSourceUrl = scrubCoreSourceUrl(providerAddonId, lastSourceUrl))
+    copy(lastSourceUrl = if (isUnsupportedMobileLiveTvProgress()) null else scrubCoreSourceUrl(providerAddonId, lastSourceUrl))
 
 private fun StoredWatchProgressPayload.scrubCoreSources(): StoredWatchProgressPayload = copy(
     entries = entries.map { it.scrubCoreSource() }, pendingDeletes = pendingDeletes.map { it.scrubCoreSource() },

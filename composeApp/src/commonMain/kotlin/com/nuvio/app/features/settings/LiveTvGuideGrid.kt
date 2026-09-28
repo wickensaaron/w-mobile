@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvRepository
+import com.nuvio.app.features.livetv.programmesFor
 import com.nuvio.app.features.livetv.LiveTvUiState
 import com.nuvio.app.core.format.formatLocalHourMinute
 import com.nuvio.app.core.ui.nuvioSafeBottomPadding
@@ -93,7 +94,7 @@ internal fun LiveTvGuideGrid(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onChannelsClick) { Text("Channels") }
                     Button(onClick = {}) { Text("Guide") }
-                    OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.guideUrl.isNotBlank()) { Text("Refresh") }
+                    OutlinedButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.hasGuideSources) { Text("Refresh") }
                 }
                 OutlinedTextField(
                     value = searchQuery,
@@ -107,7 +108,7 @@ internal fun LiveTvGuideGrid(
                 }
                 if (uiState.isGuideLoading) Text("Loading programme guide…")
                 uiState.guideErrorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (uiState.guideUrl.isBlank()) Text("Add an XMLTV URL in Sources to populate the guide.")
+                if (!uiState.hasGuideSources) Text("Add an XMLTV URL in Sources to populate the guide.")
                 Text("Times shown in your device time zone. Swipe the timeline to see later programmes.", style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -146,10 +147,7 @@ private fun LiveTvGridChannelRow(
     windowEnd: Long,
     scrollState: androidx.compose.foundation.ScrollState,
 ) {
-    val guideKey = channel.guideId ?: channel.name
-    val programmes = uiState.programmes[guideKey]
-        ?: uiState.programmes.entries.firstOrNull { it.key.equals(guideKey, true) }?.value
-        ?: emptyList()
+    val programmes = uiState.programmesFor(channel)
     val totalWidth = halfHourWidth * (guideHours * 2)
     Row(modifier = Modifier.fillMaxWidth().height(80.dp)) {
         Box(

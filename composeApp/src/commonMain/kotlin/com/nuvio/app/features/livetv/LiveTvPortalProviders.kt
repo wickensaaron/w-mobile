@@ -2,6 +2,9 @@ package com.nuvio.app.features.livetv
 
 import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import io.ktor.http.encodeURLParameter
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -16,38 +19,70 @@ private const val XTREAM_PLAYLIST_ID = "provider:xtream"
 private val portalJson = Json { ignoreUnknownKeys = true; isLenient = true }
 private val playlistRequestHeaders = mapOf("Accept" to "application/json, text/plain, */*", "User-Agent" to "W/1.0")
 private val streamRequestHeaders = mapOf("User-Agent" to "Mozilla/5.0", "Accept" to "*/*")
+private val importedStreamIdPattern = Regex("[A-Za-z0-9_-]{1,80}")
 
-internal suspend fun fetchXtreamChannels(settings: LiveTvXtreamSettings): List<LiveTvChannel> {
+internal suspend fun fetchXtreamChannels(
+    settings: LiveTvXtreamSettings,
+    accountSource: ImportedLiveTvSource? = null,
+    isCurrent: () -> Boolean = { true },
+): List<LiveTvChannel> {
     val normalized = settings.normalized()
-    val categories = xtreamRequest(normalized, "get_live_categories").arrayOrEmpty().mapNotNull { element ->
-        val item = element as? JsonObject ?: return@mapNotNull null
-        val id = item.string("category_id") ?: item.string("id") ?: return@mapNotNull null
+    val categories = xtreamRequest(normalized, "get_live_categories", accountSource != null, isCurrent).arrayOrEmpty().take(10_000).mapIndexedNotNull { index, element ->
+        if (accountSource != null && index % 256 == 0) {
+            currentCoroutineContext().ensureActive()
+            yield()
+            check(isCurrent()) { "Live TV source changed" }
+        }
+        val item = element as? JsonObject ?: return@mapIndexedNotNull null
+        val id = item.string("category_id") ?: item.string("id") ?: return@mapIndexedNotNull null
         id to (item.string("category_name") ?: item.string("name") ?: id)
     }.toMap()
-    return xtreamRequest(normalized, "get_live_streams").arrayOrEmpty().mapIndexedNotNull { index, element ->
+    val streams = xtreamRequest(normalized, "get_live_streams", accountSource != null, isCurrent).arrayOrEmpty()
+    if (accountSource != null) require(streams.size <= MobileLiveTvCatalogueLimit) { "Account source exceeds device limit" }
+    val channels = streams.mapIndexedNotNull { index, element ->
+        if (accountSource != null && index % 256 == 0) {
+            currentCoroutineContext().ensureActive()
+            yield()
+            check(isCurrent()) { "Live TV source changed" }
+        }
         val item = element as? JsonObject ?: return@mapIndexedNotNull null
         val name = item.string("name") ?: return@mapIndexedNotNull null
+        if (accountSource != null && name.isBlank()) return@mapIndexedNotNull null
         val streamId = item.string("stream_id") ?: item.string("id") ?: return@mapIndexedNotNull null
+        if (accountSource != null && !streamId.matches(importedStreamIdPattern)) return@mapIndexedNotNull null
         val extension = item.string("container_extension")?.trim()?.trimStart('.')?.ifBlank { null } ?: "ts"
         val directSource = item.string("direct_source")?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
         LiveTvChannel(
-            id = "xtream:$streamId",
+            id = accountSource?.let { "${it.id}:$streamId" } ?: "xtream:$streamId",
             name = name,
             streamUrl = directSource ?: normalized.liveStreamUrl(streamId, extension),
             logoUrl = item.string("stream_icon") ?: item.string("logo"),
             group = item.string("category_id")?.let(categories::get),
-            playlistId = XTREAM_PLAYLIST_ID,
-            playlistName = "Xtream",
+            playlistId = accountSource?.id ?: XTREAM_PLAYLIST_ID,
+            playlistName = accountSource?.name ?: "Xtream",
             headers = streamRequestHeaders,
             streamType = extension,
             guideId = item.string("epg_channel_id") ?: item.string("tvg_id"),
         )
-    }.distinctBy { it.streamUrl }
+    }
+    return if (accountSource == null) channels.distinctBy { it.streamUrl } else channels
 }
 
-private suspend fun xtreamRequest(settings: LiveTvXtreamSettings, action: String): JsonElement {
+private suspend fun xtreamRequest(settings: LiveTvXtreamSettings, action: String, imported: Boolean = false,
+    isCurrent: () -> Boolean = { true }): JsonElement {
     val url = "${settings.serverUrl}/player_api.php?username=${settings.username.encodeURLParameter()}&password=${settings.password.encodeURLParameter()}&action=${action.encodeURLParameter()}"
-    return portalJson.parseToJsonElement(httpGetTextWithHeaders(url, playlistRequestHeaders))
+    val payload = if (imported) LiveTvAccountImport.providerText(url, playlistRequestHeaders, isCurrent = isCurrent)
+        else httpGetTextWithHeaders(url, playlistRequestHeaders)
+    if (imported) {
+        currentCoroutineContext().ensureActive()
+        check(isCurrent()) { "Live TV source changed" }
+    }
+    val parsed = portalJson.parseToJsonElement(payload)
+    if (imported) {
+        currentCoroutineContext().ensureActive()
+        check(isCurrent()) { "Live TV source changed" }
+    }
+    return parsed
 }
 
 private data class StalkerSession(val settings: LiveTvStalkerSettings, val token: String)

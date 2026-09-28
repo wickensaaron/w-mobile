@@ -12,6 +12,9 @@ data class LiveTvChannel(
     val streamType: String? = null,
     val stalkerCommand: String? = null,
     val guideId: String? = null,
+    val accountScope: LiveTvAccountScope? = null,
+    val accountSourceGeneration: Long? = null,
+    val sourceLoadGeneration: Int? = null,
 )
 
 data class LiveTvProgramme(
@@ -69,11 +72,23 @@ data class LiveTvUiState(
     val isNavigationEnabled: Boolean = true,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
+    val accountSources: List<LiveTvAccountSourceSummary> = emptyList(),
+    val isRestoringAccountSources: Boolean = false,
+    val accountSourceErrorMessage: String? = null,
+    val accountGuideSourceCount: Int = 0,
 ) {
     val hasPlaylist: Boolean
         get() = playlists.isNotEmpty() || playlistUrl.isNotBlank() ||
-            stalkerSettings.isConfigured || xtreamSettings.isConfigured
+            stalkerSettings.isConfigured || xtreamSettings.isConfigured || accountSources.isNotEmpty()
+
+    val hasGuideSources: Boolean get() = guideUrl.isNotBlank() || accountGuideSourceCount > 0
 
     val showInNavigation: Boolean
         get() = hasPlaylist && isNavigationEnabled
+}
+
+internal fun LiveTvUiState.programmesFor(channel: LiveTvChannel): List<LiveTvProgramme> {
+    if (channel.accountScope != null) return programmes[channel.id].orEmpty()
+    val key = channel.guideId ?: channel.name
+    return programmes[key] ?: programmes.entries.firstOrNull { it.key.equals(key, true) }?.value.orEmpty()
 }
