@@ -15,6 +15,8 @@ repository_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 version_file="${repository_root}/iosApp/Configuration/Version.xcconfig"
 version="${1:-$(sed -nE 's/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*([^[:space:]#]+).*$/\1/p' "${version_file}" | head -n 1)}"
 configuration="${IOS_CONFIGURATION:-Release}"
+# Pinned QuickJS objects in the full distribution were built for iOS 18.5.
+minimum_ios_version="18.5"
 case "${configuration}" in
     Debug)
         configuration_slug="debug"
@@ -145,6 +147,11 @@ if [[ "${built_version}" != "${version}" ]]; then
     echo "Built iOS version ${built_version} does not match ${version}." >&2
     exit 1
 fi
+app_minimum_ios="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "${app_path}/Info.plist")"
+if [[ "${app_minimum_ios}" != "${minimum_ios_version}" ]]; then
+    echo "Built app minimum iOS ${app_minimum_ios} does not match the native dependency baseline ${minimum_ios_version}." >&2
+    exit 1
+fi
 
 executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${app_path}/Info.plist")"
 architectures="$(xcrun lipo -archs "${app_path}/${executable}")"
@@ -168,6 +175,11 @@ fi
 widget_path="${app_path}/PlugIns/DownloadsWidgetExtension.appex"
 if [[ ! -d "${widget_path}" ]]; then
     echo "Built iOS application does not contain the downloads widget." >&2
+    exit 1
+fi
+widget_minimum_ios="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "${widget_path}/Info.plist")"
+if [[ "${widget_minimum_ios}" != "${minimum_ios_version}" ]]; then
+    echo "Built widget minimum iOS ${widget_minimum_ios} does not match the app baseline ${minimum_ios_version}." >&2
     exit 1
 fi
 widget_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${widget_path}/Info.plist")"
@@ -202,6 +214,7 @@ build_info="${ipa_path%.ipa}-build-info.txt"
 {
     printf 'Application: W Media Player\nDistribution: full\nConfiguration: %s\n' "${configuration}"
     printf 'Version: %s\nBundle identifier: %s\n' "${built_version}" "${bundle_identifier}"
+    printf 'Minimum iOS: %s\nWidget minimum iOS: %s\n' "${app_minimum_ios}" "${widget_minimum_ios}"
     printf 'Source commit: %s\n' "$(git rev-parse HEAD)"
     if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
         printf 'Source status: contains local tracked changes\n'
