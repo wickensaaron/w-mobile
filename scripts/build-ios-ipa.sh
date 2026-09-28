@@ -48,6 +48,14 @@ build_environment=(
     SWIFTPM_MODULECACHE_OVERRIDE="${swiftpm_module_cache}"
 )
 xcode_build_settings=()
+xcode_parallelism=()
+if [[ -n "${NUVIO_XCODE_MAX_JOBS:-}" ]]; then
+    if [[ ! "${NUVIO_XCODE_MAX_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "NUVIO_XCODE_MAX_JOBS must be a positive integer." >&2
+        exit 1
+    fi
+    xcode_parallelism=(-jobs "${NUVIO_XCODE_MAX_JOBS}")
+fi
 if [[ -n "${NUVIO_GRADLE_JVMARGS:-}" ]]; then
     xcode_build_settings+=("NUVIO_GRADLE_JVMARGS=${NUVIO_GRADLE_JVMARGS}")
 fi
@@ -67,7 +75,13 @@ if [[ -n "${NUVIO_GRADLE_EXPECTED_HEAP_MB:-}" ]]; then
         echo "NUVIO_GRADLE_EXPECTED_HEAP_MB must be a positive integer." >&2
         exit 1
     fi
-    echo "Mac physical memory (bytes): $(sysctl -n hw.memsize)"
+    physical_memory_bytes="$(sysctl -n hw.memsize)"
+    if [[ ! "${physical_memory_bytes}" =~ ^[1-9][0-9]*$ ]] ||
+        (( physical_memory_bytes < (NUVIO_GRADLE_EXPECTED_HEAP_MB + 2048) * 1024 * 1024 )); then
+        echo "This Mac cannot accommodate the requested heap with 2 GiB left for Xcode and the system." >&2
+        exit 1
+    fi
+    echo "Mac physical memory (bytes): ${physical_memory_bytes}"
     echo "Requested Gradle heap: ${NUVIO_GRADLE_EXPECTED_HEAP_MB} MiB"
     gradle_init_directory="$(mktemp -d "${TMPDIR:-/tmp}/w-media-ios-gradle.XXXXXX")"
     trap '[[ -z "${gradle_init_directory}" ]] || rm -rf "${gradle_init_directory}"' EXIT
@@ -94,6 +108,7 @@ fi
     -sdk iphoneos \
     -destination 'generic/platform=iOS' \
     -derivedDataPath "${derived_data}" \
+    "${xcode_parallelism[@]}" \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY= \

@@ -11,10 +11,11 @@ workflows:
       vars:
         IOS_CONFIGURATION: Release
         NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
-        NUVIO_GRADLE_JVMARGS: -Xmx4608M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M
-        NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx4608M
-        NUVIO_GRADLE_EXPECTED_HEAP_MB: 4608
+        NUVIO_GRADLE_JVMARGS: -Xmx7168M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M
+        NUVIO_KOTLIN_NATIVE_JVMARGS: -Xmx7168M
+        NUVIO_GRADLE_EXPECTED_HEAP_MB: 7168
         NUVIO_GRADLE_MAX_WORKERS: 1
+        NUVIO_XCODE_MAX_JOBS: 1
     scripts:
       - name: Check public Supabase configuration
         script: |

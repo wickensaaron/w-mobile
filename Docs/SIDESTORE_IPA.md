@@ -2,7 +2,7 @@
 
 The iOS app is built from the Kotlin Multiplatform source on macOS. The repository's `codemagic.yaml` runs its existing iOS dependency preparation and unsigned device-IPA packaging scripts on a Codemagic Mac. SideStore then signs the IPA with the device owner's Apple Account when it is installed.
 
-The owner chose Codemagic and authorised the source push and cloud IPA build on 28 September 2026. Two Mac build attempts have run; neither produced an IPA. Use the current authorised build scope for retries, and obtain a new instruction before publishing elsewhere or enabling paid machines/billing.
+The owner chose Codemagic and authorised the source push and cloud IPA build on 28 September 2026. Three Mac build attempts have run; none produced an IPA. Use the current authorised build scope for retries, and obtain a new instruction before publishing elsewhere or enabling paid machines/billing.
 
 ## Current build evidence — 28 September 2026
 
@@ -10,8 +10,11 @@ The owner chose Codemagic and authorised the source push and cloud IPA build on 
 |---|---|---|
 | `6abaca9df7280e0c166c256c` | `930755a659aa29de076a2ca3290f125508f72a54` | Failed. Checkout exposed missing declarations for three existing gitlinks; dependency preparation proceeded, then native Kotlin compilation found JVM-only badge-loader locking. |
 | `6abacc8d679033ef824d48ee` | `730acb461fd1def04b4986f93bfe27f9b0107031` | Checkout and Kotlin compilation completed. `linkReleaseFrameworkIosArm64` failed with Java heap space after 9m29s. The daemon reported an effective maximum heap of 2.5 GiB, despite the workflow requesting 4608 MiB. |
+| `6abad1ab22e12a9e066ef6de` | `21fff02234ebd931e58ccc874f9fa4dc9f552bd7` | Effective Gradle heap verified at 4608 MiB on a 10 GiB Mac. Native Release linking still failed with Java heap space in `DevirtualizationAnalysis` after 5m31s. Swift app compilation was not reached. |
 
-The missing gitlink declarations and portable badge locking are fixed in `730acb46`. The next prepared change forwards the memory settings to Xcode's Kotlin build phase as explicit Gradle command-line properties: `-Dorg.gradle.jvmargs` for the daemon and `-Pkotlin.native.jvmArgs` for native compiler configuration. The M2 workflow uses one Gradle worker, logs the Mac's physical memory and effective JVM heap, and stops before expensive compilation if the requested heap did not reach the daemon. Release optimisation remains enabled. This correction has passed shell/argument checks locally; its next Mac build result is pending.
+The missing gitlink declarations and portable badge locking are fixed in `730acb46`. Commit `21fff022` forwards explicit Gradle memory settings and verifies effective heap. The next bounded retry increases it to 7168 MiB, retains one Gradle worker and limits Xcode to one job. The script requires the requested heap plus 2 GiB of physical memory. This capacity check does not prove working-set safety: metaspace/native/system memory also consume the measured 10 GiB. No further heap increase is planned if this bound fails. Release optimisation, Kotlin 2.4.10 and the free M2 machine remain unchanged. Shell/argument-boundary checks passed without Gradle/Xcode; the cloud build must establish linking and Swift success.
+
+Mobile Live TV sources are session-only and do not yet import encrypted Windows/TV sources or resolve their archive identities. A prepared boundary hides unsupported imported history cards and blocks generic addon playback/metadata while retaining saved progress. Its focused assertions are unrun; shared live-channel logos, replay and provider persistence remain required features.
 
 ## Codemagic setup
 
