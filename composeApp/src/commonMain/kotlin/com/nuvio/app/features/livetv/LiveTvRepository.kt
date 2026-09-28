@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlin.random.Random
+import kotlin.time.Clock
 
 object LiveTvRepository {
     private val log = Logger.withTag("LiveTvRepository")
@@ -43,6 +44,9 @@ object LiveTvRepository {
     private var accountSourceGeneration = 0L
     private var observerJob: Job? = null
     private var accountImportJob: Job? = null
+    private var accountGuideJob: Job? = null
+    private var accountGuideSaveJob: Job? = null
+    private var accountGuideVersion = 0L
     private var channelRefreshJob: Job? = null
     private var guideRefreshJob: Job? = null
     private var playbackPreparationJob: Job? = null
@@ -65,6 +69,9 @@ object LiveTvRepository {
         val configuration = ServerConfigurationRepository.active.value
         if (loadedProfileId == profileId && loadedAccountScope == owner && loadedConfiguration == configuration) return
         accountImportJob?.cancel()
+        accountGuideJob?.cancel()
+        accountGuideSaveJob?.cancel()
+        ++accountGuideVersion
         channelRefreshJob?.cancel()
         guideRefreshJob?.cancel()
         playbackPreparationJob?.cancel()
@@ -86,6 +93,8 @@ object LiveTvRepository {
             favoriteChannelIds = loadFavoriteChannelIds(),
             lastWatchedChannelId = LiveTvStorage.loadLastWatchedChannelId(),
             isNavigationEnabled = LiveTvStorage.loadNavigationEnabled() ?: true,
+            accountGuideOwner = owner,
+            accountSourceGeneration = accountSourceGeneration,
         )
         publishNavigationVisibility()
         if (_uiState.value.hasPlaylist) {
@@ -99,7 +108,11 @@ object LiveTvRepository {
     fun restoreAccountSources() {
         val owner = loadedAccountScope ?: return
         accountImportJob?.cancel()
-        _uiState.value = _uiState.value.copy(isRestoringAccountSources = true, accountSourceErrorMessage = null)
+        accountGuideJob?.cancel()
+        accountGuideSaveJob?.cancel()
+        ++accountGuideVersion
+        _uiState.value = _uiState.value.copy(isRestoringAccountSources = true, accountSourceErrorMessage = null,
+            isAccountGuideSyncing = false, isAccountGuideSaving = false)
         accountImportJob = scope.launch {
             try {
                 val snapshot = LiveTvAccountImport.pull(owner)
@@ -107,15 +120,23 @@ object LiveTvRepository {
                 importedSources = snapshot.providers
                 ++accountSourceGeneration
                 playbackPreparationJob?.cancel()
+                val previousImportedIds = _uiState.value.channels.filter { it.accountScope != null }.map { it.id }.toSet()
                 _uiState.value = _uiState.value.copy(
                     accountSources = importedSources.map(ImportedLiveTvSource::summary),
                     accountGuideSourceCount = importedSources.count { it.enabled && it.guideUrl().isNotBlank() },
                     channels = _uiState.value.channels.filter { it.accountScope == null },
+                    programmes = _uiState.value.programmes.filterKeys { it !in previousImportedIds },
+                    favoriteChannelIds = loadFavoriteChannelIds(),
+                    accountGuideOwner = owner,
+                    accountSourceGeneration = accountSourceGeneration,
+                    accountGuideSnapshot = null,
+                    accountGuideSyncMessage = null,
                     isRestoringAccountSources = false,
                     accountSourceErrorMessage = null,
                 )
                 publishNavigationVisibility()
                 refresh()
+                restoreAccountGuidePreferences()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -124,6 +145,102 @@ object LiveTvRepository {
                     _uiState.value = _uiState.value.copy(isRestoringAccountSources = false,
                         accountSourceErrorMessage = "Account sources could not be restored. Try again when connected.")
                 }
+            }
+        }
+    }
+
+    private fun isCurrentGuideAccount(owner: LiveTvAccountScope, generation: Long): Boolean =
+        loadedAccountScope == owner && currentLiveTvAccountScope() == owner && generation == accountSourceGeneration &&
+            loadedConfiguration == ServerConfigurationRepository.active.value && loadedProfileId == owner.profile &&
+            ProfileRepository.activeProfileId == owner.profile
+
+    private suspend fun pullAccountGuide(owner: LiveTvAccountScope, generation: Long,
+        isCurrent: () -> Boolean): LiveTvAccountGuideSnapshot {
+        val sources = importedSources.filter { it.enabled }.map { it.id }.toSet()
+        check(isCurrentGuideAccount(owner, generation) && isCurrent())
+        val payload = LiveTvAccountGuideSync.pullPayload(owner, isCurrent)
+        return withContext(Dispatchers.Default) { decodeLiveTvAccountGuideSnapshot(payload, sources) }
+    }
+
+    private fun publishAccountGuide(snapshot: LiveTvAccountGuideSnapshot) {
+        val previousUkOnly = _uiState.value.accountGuideSnapshot?.preferences?.ukOnly ?: true
+        val enabledSources = importedSources.filter { it.enabled }.map { it.id }.toSet()
+        val favourites = snapshot.preferences?.favouriteIds.orEmpty().filter { it.substringBefore(':') in enabledSources }
+        _uiState.value = _uiState.value.copy(accountGuideSnapshot = snapshot,
+            favoriteChannelIds = loadFavoriteChannelIds() + favourites, accountGuideSyncMessage = null)
+        if (previousUkOnly != (snapshot.preferences?.ukOnly ?: true) && _uiState.value.channels.isNotEmpty()) refreshGuide()
+    }
+
+    fun restoreAccountGuidePreferences() {
+        ensureLoaded()
+        val owner = loadedAccountScope ?: return
+        if (_uiState.value.isRestoringAccountSources || _uiState.value.isAccountGuideSaving) return
+        val generation = accountSourceGeneration
+        val version = ++accountGuideVersion
+        accountGuideJob?.cancel()
+        fun isCurrent() = version == accountGuideVersion && isCurrentGuideAccount(owner, generation)
+        _uiState.value = _uiState.value.copy(isAccountGuideSyncing = true, accountGuideSyncMessage = null)
+        accountGuideJob = scope.launch {
+            try {
+                val snapshot = pullAccountGuide(owner, generation, ::isCurrent)
+                if (isCurrent()) {
+                    publishAccountGuide(snapshot)
+                    _uiState.value = _uiState.value.copy(isAccountGuideSyncing = false)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (isCurrent()) _uiState.value = _uiState.value.copy(isAccountGuideSyncing = false,
+                    accountGuideSyncMessage = "Your guide choices could not be updated. Try Refresh choices when connected.")
+            }
+        }
+    }
+
+    /** One confirmed account write at a time; a conflict reapplies only this explicit favourite intent. */
+    fun toggleFavoriteGuideRow(row: LiveTvAccountGuideRow) {
+        ensureLoaded()
+        val channel = row.channel
+        if (!isCurrentPlaybackRequest(channel)) return
+        if (channel.accountScope == null) { toggleFavoriteChannel(channel.id); return }
+        val owner = loadedAccountScope ?: return
+        val generation = accountSourceGeneration
+        if (_uiState.value.isAccountGuideSaving || _uiState.value.isAccountGuideSyncing || _uiState.value.isRestoringAccountSources) return
+        val catalogueVersion = channelRefreshVersion
+        val snapshot = _uiState.value.accountGuideSnapshot ?: run {
+            _uiState.value = _uiState.value.copy(accountGuideSyncMessage = "Refresh choices before saving account favourites.")
+            return
+        }
+        val ids = (row.alternatives + channel).filter {
+            it.accountScope == owner && isCurrentPlaybackRequest(it)
+        }.map { it.id }.toSet()
+        val shouldAdd = !isLiveTvGuideRowFavourite(row, snapshot.preferences?.favouriteIds.orEmpty().toSet(),
+            _uiState.value.programmes, Clock.System.now().toEpochMilliseconds())
+        val version = ++accountGuideVersion
+        accountGuideJob?.cancel()
+        fun isCurrent() = version == accountGuideVersion && isCurrentGuideAccount(owner, generation) &&
+            catalogueVersion == channelRefreshVersion
+        _uiState.value = _uiState.value.copy(isAccountGuideSaving = true, accountGuideSyncMessage = null)
+        accountGuideSaveJob = scope.launch {
+            try {
+                fun applyIntent(base: LiveTvAccountGuideSnapshot): LiveTvAccountGuidePreferences {
+                    return applyLiveTvAccountFavouriteIntent(base, channel.id, ids, shouldAdd)
+                }
+                val saved = try {
+                    LiveTvAccountGuideSync.savePreferences(owner, snapshot, applyIntent(snapshot), ::isCurrent)
+                } catch (_: LiveTvGuideRevisionConflict) {
+                    val latest = pullAccountGuide(owner, generation, ::isCurrent)
+                    check(isCurrent() && isCurrentPlaybackRequest(channel))
+                    LiveTvAccountGuideSync.savePreferences(owner, latest, applyIntent(latest), ::isCurrent)
+                }
+                if (isCurrent()) {
+                    publishAccountGuide(saved)
+                    _uiState.value = _uiState.value.copy(isAccountGuideSaving = false)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (isCurrent()) _uiState.value = _uiState.value.copy(isAccountGuideSaving = false,
+                    accountGuideSyncMessage = "This favourite could not be saved. Refresh choices, then try again.")
             }
         }
     }
@@ -408,19 +525,25 @@ object LiveTvRepository {
                     for (source in sources) {
                         currentCoroutineContext().ensureActive()
                         if (!isCurrentGuide() || !ownsSource(source, owner, generation)) return@withContext null
-                        val sourceChannels = channelsBySource[source.id].orEmpty()
+                        val sourceChannels = channelsBySource[source.id].orEmpty().let { channels ->
+                            if (currentState.accountGuideSnapshot?.preferences?.ukOnly != false)
+                                channels.filter(::isExplicitUkAccountGuideChannel) else channels
+                        }
                         if (sourceChannels.isEmpty()) continue
                         if (!projection.hasCapacity) {
                             failures++
                             continue
                         }
                         runCatching {
-                            val parsed = parseXmlTvGuide(LiveTvAccountImport.providerText(source.guideUrl(),
-                                mapOf("Accept" to "application/xml, text/xml, */*"), 24 * 1024 * 1024,
-                                isCurrent = { ownsSource(source, owner, generation) }))
+                            val parsed = LiveTvAccountImport.providerGuide(source.guideUrl(), source.id, sourceChannels,
+                                projection.remainingCapacity,
+                                isCurrent = { isCurrentGuide() && ownsSource(source, owner, generation) })
                             currentCoroutineContext().ensureActive()
                             check(isCurrentGuide() && ownsSource(source, owner, generation)) { "Live TV guide source changed" }
-                            projection.appendImported(source.id, sourceChannels, parsed)
+                            // Streaming rows already carry exact owned source/channel IDs. Appending
+                            // these immutable rows preserves the shared budget without a second copy.
+                            projection.appendManual(parsed.programmes)
+                            if (parsed.wasTruncated) failures++
                         }.onFailure {
                             if (it is CancellationException) throw it
                             failures++
@@ -471,6 +594,9 @@ object LiveTvRepository {
     fun refresh() {
         ensureLoaded()
         channelRefreshJob?.cancel()
+        accountGuideSaveJob?.cancel()
+        if (_uiState.value.isAccountGuideSaving) _uiState.value = _uiState.value.copy(isAccountGuideSaving = false,
+            accountGuideSyncMessage = "Sources changed before this favourite was confirmed. Refresh choices to check it.")
         val version = ++channelRefreshVersion
         val currentState = _uiState.value
         val sources = importedSources.filter { it.enabled }
@@ -634,6 +760,11 @@ object LiveTvRepository {
 
     fun toggleFavoriteChannel(channelId: String) {
         ensureLoaded()
+        val channel = _uiState.value.channels.singleOrNull { it.id == channelId } ?: return
+        if (channel.accountScope != null) {
+            toggleFavoriteGuideRow(LiveTvAccountGuideRow(channel, channel.name, channel.group.orEmpty(), null, null))
+            return
+        }
         val favorites = _uiState.value.favoriteChannelIds
             .let { current ->
                 if (channelId in current) {
@@ -675,6 +806,7 @@ object LiveTvRepository {
             .lineSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
+            .filterNot { accountGuideProviderPattern.matches(it.substringBefore(':')) && ':' in it }
             .toSet()
 
     private fun persistFavoriteChannelIds(channelIds: Set<String>) {

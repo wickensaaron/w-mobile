@@ -7,6 +7,7 @@ import com.nuvio.app.core.network.SupabaseProvider
 import com.nuvio.app.features.profiles.ProfileRepository
 import io.github.jan.supabase.auth.auth
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.prepareRequest
 import io.ktor.client.request.header
 import io.ktor.client.request.setBody
@@ -17,6 +18,12 @@ import io.ktor.http.encodeURLParameter
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import kotlin.time.Clock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -140,6 +147,61 @@ internal object LiveTvAccountImport {
         currentCoroutineContext().ensureActive()
         check(isCurrent()) { "Live TV source changed" }
         return text
+    }
+
+    /**
+     * Identity encoding is requested to avoid invisible engine decoding. If the server ignores it,
+     * the delivered-byte budget counts whatever the engine actually exposes (compressed OR already
+     * decoded); a second independent budget counts XML bytes after optional gzip magic detection.
+     * No response string, full byte array, disk file, redirect or retry is used for this guide lane.
+     */
+    suspend fun providerGuide(
+        url: String,
+        sourceId: String,
+        channels: List<LiveTvChannel>,
+        programmeBudget: Int,
+        isCurrent: () -> Boolean,
+    ): ImportedXmlTvResult = withContext(Dispatchers.Default) {
+        require(url.length <= 65_536 && runCatching {
+            val parsed = Url(url)
+            parsed.protocol.name in setOf("http", "https") && parsed.host.isNotBlank()
+        }.getOrDefault(false)) { "Invalid Live TV guide endpoint" }
+        check(isCurrent()) { "Live TV guide source changed" }
+        val limits = ImportedXmlTvLimits(retainedProgrammes = programmeBudget)
+        try {
+            // The coroutine deadline includes connection, transfer, decompression and parsing.
+            withTimeout(180_000) {
+                val collector = ImportedXmlTvCollector(sourceId, channels, Clock.System.now().toEpochMilliseconds(),
+                    currentCoroutineContext(), isCurrent, limits)
+                http.prepareRequest(url) {
+                    method = HttpMethod.Get
+                    header("Accept", "application/xml, text/xml, application/gzip, */*")
+                    header("Accept-Encoding", "identity")
+                    timeout { requestTimeoutMillis = 180_000; connectTimeoutMillis = 15_000; socketTimeoutMillis = 30_000 }
+                }.execute { response ->
+                    collector.checkCurrent()
+                    check(response.status.value in 200..299) { "Live TV guide request failed" }
+                    val channel = response.bodyAsChannel()
+                    val deliveredBudget = ImportedXmlTvByteBudget(limits.deliveredBytes)
+                    val result = parseImportedXmlTvStream(read = { buffer ->
+                        collector.checkCurrent()
+                        val size = channel.readAvailable(buffer)
+                        collector.checkCurrent()
+                        if (size > 0) {
+                            deliveredBudget.accept(size)
+                        } else if (size == 0) yield()
+                        size
+                    }, collector, limits)
+                    collector.checkCurrent()
+                    result
+                }
+            }
+        } catch (error: TimeoutCancellationException) {
+            // A provider deadline is a load failure; caller/sign-out cancellation still propagates.
+            currentCoroutineContext().ensureActive()
+            check(isCurrent()) { "Live TV guide source changed" }
+            throw IllegalStateException("Live TV guide timed out")
+        }
     }
 
     private suspend fun requestText(url: String, maxBytes: Int, method: HttpMethod,

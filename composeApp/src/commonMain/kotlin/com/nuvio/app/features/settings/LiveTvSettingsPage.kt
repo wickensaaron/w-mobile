@@ -1,6 +1,5 @@
 package com.nuvio.app.features.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -36,13 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nuvio.app.features.livetv.LiveTvChannel
 import com.nuvio.app.features.livetv.LiveTvRepository
-import com.nuvio.app.features.livetv.programmesFor
 import com.nuvio.app.features.livetv.LiveTvUiState
 import com.nuvio.app.features.livetv.LiveTvStalkerSettings
 import com.nuvio.app.features.livetv.LiveTvXtreamSettings
@@ -51,8 +47,8 @@ import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.core.ui.nuvio
 import com.nuvio.app.core.ui.nuvioSafeBottomPadding
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlin.time.Clock
-import com.nuvio.app.core.format.formatLocalHourMinute
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.Lifecycle
 
 @Composable
 internal fun LiveTvTabScreen() {
@@ -62,7 +58,8 @@ internal fun LiveTvTabScreen() {
     }.collectAsStateWithLifecycle()
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var favoritesOnly by rememberSaveable { mutableStateOf(false) }
-    var guideMode by rememberSaveable { mutableStateOf(false) }
+    var guideMode by rememberSaveable { mutableStateOf(true) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { LiveTvRepository.restoreAccountGuidePreferences() }
     LiveTvTheme {
         if (guideMode) {
             LiveTvGuideGrid(
@@ -82,18 +79,12 @@ internal fun LiveTvTabScreen() {
                 contentPadding = PaddingValues(top = statusBarPadding + 20.dp, bottom = bottomPadding),
             ) {
                 item(key = "live_tv_tab_title") {
-                    Text("Live TV", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text("Live TV settings", style = MaterialTheme.typography.headlineMedium)
+                        OutlinedButton(onClick = { guideMode = true }) { Text("Back to guide") }
+                    }
                 }
-                liveTvSettingsContent(
-                    isTablet = false,
-                    uiState = uiState,
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = { searchQuery = it },
-                    favoritesOnly = favoritesOnly,
-                    onFavoritesOnlyChange = { favoritesOnly = it },
-                    guideMode = guideMode,
-                    onGuideModeChange = { guideMode = it },
-                )
+                liveTvSettingsContent(isTablet = false, uiState = uiState)
             }
         }
     }
@@ -124,78 +115,34 @@ private fun LiveTvTheme(content: @Composable () -> Unit) {
     }
 }
 
-/** Source setup and channel browser share one Settings destination on Android and iOS. */
-internal fun LazyListScope.liveTvSettingsContent(
-    isTablet: Boolean,
-    uiState: LiveTvUiState,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    favoritesOnly: Boolean,
-    onFavoritesOnlyChange: (Boolean) -> Unit,
-    guideMode: Boolean,
-    onGuideModeChange: (Boolean) -> Unit,
-) {
-    val visibleChannels = uiState.channels.filter { channel ->
-        (!favoritesOnly || channel.id in uiState.favoriteChannelIds) &&
-            (searchQuery.isBlank() || channel.name.contains(searchQuery.trim(), ignoreCase = true) ||
-                channel.group?.contains(searchQuery.trim(), ignoreCase = true) == true)
-    }
-    item(key = "live_tv_sources") {
-        LiveTvTheme { LiveTvSourceSettings(uiState, isTablet) }
-    }
-    item(key = "live_tv_channels_header") {
-        LiveTvTheme {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            Text("Channels (${visibleChannels.size})", style = MaterialTheme.typography.titleLarge)
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                label = { Text("Search channels") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            TextButton(onClick = { onFavoritesOnlyChange(!favoritesOnly) }) {
-                Text(if (favoritesOnly) "Show all channels" else "Show favourites only")
-            }
+/** Provider setup and organiser choices live in Settings; playback uses the prepared guide. */
+internal fun LazyListScope.liveTvSettingsContent(isTablet: Boolean, uiState: LiveTvUiState) {
+    item(key = "live_tv_sources") { LiveTvTheme { LiveTvSourceSettings(uiState, isTablet) } }
+    item(key = "live_tv_guide_choices") { LiveTvTheme { LiveTvAccountGuideChoices(uiState) } }
+}
+
+@Composable
+private fun LiveTvAccountGuideChoices(uiState: LiveTvUiState) {
+    val owner = uiState.accountGuideOwner
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    var openError by remember(owner) { mutableStateOf<String?>(null) }
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Guide choices", style = MaterialTheme.typography.titleLarge)
+        Text("Hide categories, arrange your channels and choose the UK cleanup in your organiser.")
+        if (owner != null) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (guideMode) {
-                    OutlinedButton(onClick = { onGuideModeChange(false) }) { Text("Channels") }
-                    Button(onClick = {}) { Text("Guide") }
-                } else {
-                    Button(onClick = {}) { Text("Channels") }
-                    OutlinedButton(onClick = { onGuideModeChange(true) }) { Text("Guide") }
-                }
+                Button(onClick = {
+                    openError = null
+                    runCatching { uriHandler.openUri("${owner.backend}/functions/v1/tv-logins-exchange?organise=live-tv&profile=${owner.profile}") }
+                        .onFailure { openError = "The organiser could not be opened on this device." }
+                }) { Text("Organise channels") }
+                OutlinedButton(onClick = LiveTvRepository::restoreAccountGuidePreferences,
+                    enabled = !uiState.isAccountGuideSyncing && !uiState.isAccountGuideSaving) { Text("Refresh choices") }
             }
-            if (uiState.isLoading) Text("Loading channels…", style = MaterialTheme.typography.bodyMedium)
-            uiState.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (uiState.channels.isEmpty() && !uiState.isLoading) {
-                Text("Add an M3U playlist or provider above to browse channels.")
-            }
-        }
-        }
-    }
-    if (guideMode) {
-        val guideKeys = uiState.programmes.keys.map(String::lowercase).toSet()
-        val guideChannels = visibleChannels.filter { channel ->
-            (channel.guideId ?: channel.name).lowercase() in guideKeys
-        }
-        if (guideChannels.isEmpty()) {
-            item(key = "live_tv_no_guide") {
-                LiveTvTheme {
-                Text(
-                    "No guide entries match these channels. Check the XMLTV URL and channel IDs.",
-                    modifier = Modifier.padding(16.dp),
-                )
-                }
-            }
-        }
-        items(guideChannels, key = { "guide:${it.id}" }) { channel ->
-            LiveTvTheme { LiveTvGuideRow(channel, uiState) }
-        }
-    } else {
-        items(visibleChannels, key = { it.id }) { channel ->
-            LiveTvTheme { LiveTvChannelRow(channel, uiState) }
-        }
+            if (uiState.isAccountGuideSyncing) Text("Updating your guide choices…")
+            uiState.accountGuideSyncMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        } else Text("Sign in to use the same guide choices on your other devices.")
+        openError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     }
 }
 
@@ -302,56 +249,4 @@ private fun LiveTvSourceSettings(uiState: LiveTvUiState, isTablet: Boolean) {
             Text("Restore account sources")
         }
     }
-}
-
-@Composable
-private fun LiveTvChannelRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
-    val now = Clock.System.now().toEpochMilliseconds()
-    val guide = remember(uiState.programmes, channel) { uiState.programmesFor(channel) }
-    val current = guide.firstOrNull { it.startEpochMs <= now && it.stopEpochMs > now }
-    val next = guide.firstOrNull { it.startEpochMs > now }
-    Column(modifier = Modifier.fillMaxWidth().clickable { LiveTvRepository.requestPlayback(channel) }.padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(channel.name, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(onClick = { LiveTvRepository.toggleFavoriteChannel(channel.id) }) {
-                Text(if (channel.id in uiState.favoriteChannelIds) "★" else "☆")
-            }
-        }
-        channel.group?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
-        current?.let { Text("Now: ${it.title}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        next?.let { Text("Next: ${it.title}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-    }
-    HorizontalDivider()
-}
-
-@Composable
-private fun LiveTvGuideRow(channel: LiveTvChannel, uiState: LiveTvUiState) {
-    val now = Clock.System.now().toEpochMilliseconds()
-    val programmes = uiState.programmesFor(channel)
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            channel.name,
-            modifier = Modifier.fillMaxWidth().clickable { LiveTvRepository.requestPlayback(channel) },
-            style = MaterialTheme.typography.titleMedium,
-        )
-        programmes.filter { it.stopEpochMs > now }.take(6).forEach { programme ->
-            val isOnNow = programme.startEpochMs <= now && programme.stopEpochMs > now
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "${formatLocalHourMinute(programme.startEpochMs)}–${formatLocalHourMinute(programme.stopEpochMs)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    programme.title,
-                    style = if (isOnNow) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodySmall,
-                    fontWeight = if (isOnNow) FontWeight.Bold else FontWeight.Normal,
-                    modifier = Modifier.weight(2f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-    HorizontalDivider()
 }

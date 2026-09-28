@@ -76,6 +76,12 @@ data class LiveTvUiState(
     val isRestoringAccountSources: Boolean = false,
     val accountSourceErrorMessage: String? = null,
     val accountGuideSourceCount: Int = 0,
+    val accountGuideOwner: LiveTvAccountScope? = null,
+    val accountSourceGeneration: Long = 0,
+    val accountGuideSnapshot: LiveTvAccountGuideSnapshot? = null,
+    val isAccountGuideSyncing: Boolean = false,
+    val isAccountGuideSaving: Boolean = false,
+    val accountGuideSyncMessage: String? = null,
 ) {
     val hasPlaylist: Boolean
         get() = playlists.isNotEmpty() || playlistUrl.isNotBlank() ||

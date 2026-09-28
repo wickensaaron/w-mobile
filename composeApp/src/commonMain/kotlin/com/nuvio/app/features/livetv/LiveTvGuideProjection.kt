@@ -20,6 +20,7 @@ internal class LiveTvGuideProjection(private val limit: Int = MobileLiveTvProgra
     init { require(limit >= 0) }
 
     val hasCapacity: Boolean get() = programmeCount < limit
+    val remainingCapacity: Int get() = limit - programmeCount
 
     suspend fun appendManual(parsed: Map<String, List<LiveTvProgramme>>) {
         checkpoint()

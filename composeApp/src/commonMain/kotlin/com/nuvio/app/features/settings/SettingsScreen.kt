@@ -776,7 +776,7 @@ private fun MobileSettingsScreen(
                     useLibass = useLibass,
                     libassRenderType = libassRenderType,
                 )
-                SettingsPage.LiveTv -> liveTvSettingsContent(false, liveTvUiState, liveTvSearchQuery, onLiveTvSearchQueryChange, liveTvFavoritesOnly, onLiveTvFavoritesOnlyChange, liveTvGuideMode, onLiveTvGuideModeChange)
+                SettingsPage.LiveTv -> liveTvSettingsContent(false, liveTvUiState)
                 SettingsPage.Streams -> streamsSettingsContent(
                     isTablet = false,
                 )
@@ -1213,7 +1213,7 @@ private fun TabletSettingsScreen(
                         useLibass = useLibass,
                         libassRenderType = libassRenderType,
                     )
-                    SettingsPage.LiveTv -> liveTvSettingsContent(true, liveTvUiState, liveTvSearchQuery, onLiveTvSearchQueryChange, liveTvFavoritesOnly, onLiveTvFavoritesOnlyChange, liveTvGuideMode, onLiveTvGuideModeChange)
+                    SettingsPage.LiveTv -> liveTvSettingsContent(true, liveTvUiState)
                     SettingsPage.Streams -> streamsSettingsContent(
                         isTablet = true,
                     )
