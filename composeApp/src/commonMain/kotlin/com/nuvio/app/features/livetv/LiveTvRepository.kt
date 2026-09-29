@@ -609,7 +609,15 @@ object LiveTvRepository {
                     val (projection, failures) = result
                     guideNeedsRefresh = false
                     _uiState.value = _uiState.value.copy(programmes = projection.programmes, isGuideLoading = false,
-                        guideErrorMessage = if (failures > 0 || projection.wasTruncated) "Some programme guides could not be loaded or exceed the device limit." else null)
+                        guideErrorMessage = when {
+                            projection.programmeCount == 0 && failures > 0 ->
+                                "Programme guide could not load. Check the provider guide in Sources, then retry."
+                            projection.programmeCount == 0 ->
+                                "No upcoming programmes matched these channels. Check their guide IDs in Sources."
+                            failures > 0 || projection.wasTruncated ->
+                                "Some programme sources failed or exceeded the device guide limit."
+                            else -> null
+                        })
                 }
             } catch (error: CancellationException) {
                 throw error

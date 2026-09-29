@@ -183,7 +183,7 @@ internal fun LiveTvGuideGrid(
                 prepared.message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 uiState.errorMessage?.let { Text("Some channels could not load. Check Sources in settings.",
                     color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                uiState.guideErrorMessage?.let { Text("Some guide sources could not load. Retry or check Sources in settings.",
+                uiState.guideErrorMessage?.let { Text(it,
                     color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (uiState.guideErrorMessage != null || prepared.message != null) {
                     TextButton(onClick = LiveTvRepository::refreshGuide, enabled = uiState.hasGuideSources) { Text("Retry guide") }
