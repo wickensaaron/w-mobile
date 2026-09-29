@@ -63,7 +63,7 @@ internal class ImportedXmlTvCollector(
     private var depth = 0
     private var programmeDepth = 0
     private var fieldDepth = 0
-    private var field: String? = null
+    private var xmlField: String? = null
     private var guideKey: String? = null
     private var start: Long? = null
     private var stop: Long? = null
@@ -71,7 +71,7 @@ internal class ImportedXmlTvCollector(
     private var description: StringBuilder? = null
     private var callbacks = 0
 
-    val needsText: Boolean get() = when (field) {
+    val needsText: Boolean get() = when (xmlField) {
         "title" -> (title?.length ?: 512) < 512
         "desc" -> (description?.length ?: 2048) < 2048
         else -> false
@@ -101,26 +101,26 @@ internal class ImportedXmlTvCollector(
                 start!! >= now + 48L * 60 * 60 * 1000) guideKey = null
             title = null
             description = null
-            field = null
+            xmlField = null
         } else if (guideKey != null && depth == programmeDepth + 1) {
             when {
-                name == "title" && title == null -> { title = StringBuilder(); field = name; fieldDepth = depth }
-                name == "desc" && description == null -> { description = StringBuilder(); field = name; fieldDepth = depth }
+                name == "title" && title == null -> { title = StringBuilder(); xmlField = name; fieldDepth = depth }
+                name == "desc" && description == null -> { description = StringBuilder(); xmlField = name; fieldDepth = depth }
             }
         }
     }
 
     fun text(value: String) {
         checkCurrent(force = false)
-        val builder = when (field) { "title" -> title; "desc" -> description; else -> null } ?: return
-        val cap = if (field == "title") 512 else 2048
+        val builder = when (xmlField) { "title" -> title; "desc" -> description; else -> null } ?: return
+        val cap = if (xmlField == "title") 512 else 2048
         val remaining = cap - builder.length
         if (remaining > 0) builder.append(value, 0, minOf(value.length, remaining))
     }
 
     fun endElement(name: String) {
         checkCurrent(force = false)
-        if (depth == fieldDepth) { field = null; fieldDepth = 0 }
+        if (depth == fieldDepth) { xmlField = null; fieldDepth = 0 }
         if (name == "programme" && depth == programmeDepth) {
             val key = guideKey
             val nameText = title?.toString()?.trim().orEmpty()
@@ -162,7 +162,7 @@ internal class ImportedXmlTvCollector(
             programmeDepth = 0
             title = null
             description = null
-            field = null
+            xmlField = null
         }
         depth--
         check(depth >= 0) { "Invalid XMLTV structure" }
