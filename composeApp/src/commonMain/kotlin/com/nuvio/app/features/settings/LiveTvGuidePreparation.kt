@@ -14,6 +14,7 @@ import com.nuvio.app.features.livetv.LiveTvManualGuideIndex
 import com.nuvio.app.features.livetv.LiveTvProgramme
 import com.nuvio.app.features.livetv.LiveTvUiState
 import com.nuvio.app.features.livetv.projectLiveTvAccountGuide
+import com.nuvio.app.features.profiles.ProfileRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -28,16 +29,18 @@ internal data class PreparedLiveTvGuide(
     val message: String? = null,
 )
 
-private class GuidePreparationInput(val state: LiveTvUiState, val nowMs: Long, val favouritesOnly: Boolean)
+private class GuidePreparationInput(val state: LiveTvUiState, val nowMs: Long, val favouritesOnly: Boolean,
+    val localProfileId: Int)
 private data class GuidePreparationResult(val input: GuidePreparationInput, val guide: PreparedLiveTvGuide)
 
 /** Expensive cleanup is cancelled when its source/account/guide changes; search runs on its result. */
 @Composable
 internal fun rememberPreparedLiveTvGuide(state: LiveTvUiState, nowMs: Long, favouritesOnly: Boolean): PreparedLiveTvGuide {
+    val localProfileId = ProfileRepository.activeProfileId
     val input = remember(state.channels, state.programmes, state.accountGuideSnapshot, state.accountGuideOwner,
         state.accountSourceGeneration, state.accountSources, state.favoriteChannelIds, state.isAccountGuideSyncing,
-        state.isRestoringAccountSources, nowMs / 60_000, favouritesOnly) {
-        GuidePreparationInput(state, nowMs, favouritesOnly)
+        state.isRestoringAccountSources, nowMs / (60L * 60 * 1000), favouritesOnly, localProfileId) {
+        GuidePreparationInput(state, nowMs, favouritesOnly, localProfileId)
     }
     var result by remember { mutableStateOf<GuidePreparationResult?>(null) }
     LaunchedEffect(input) {
@@ -51,8 +54,21 @@ internal fun rememberPreparedLiveTvGuide(state: LiveTvUiState, nowMs: Long, favo
         currentCoroutineContext().ensureActive()
         result = GuidePreparationResult(input, guide)
     }
-    // A previous account's prepared rows must never remain visible during a new preparation.
-    return result?.takeIf { it.input === input }?.guide ?: PreparedLiveTvGuide(isPreparing = true)
+    result?.takeIf { it.input === input }?.let { return it.guide }
+    // A time-window refresh may keep its verified rows while the worker catches up. Changes to
+    // account, profile, sources, guide or preferences must never display the old owner's rows.
+    val previous = result?.takeIf { old ->
+        old.input.localProfileId == input.localProfileId &&
+            old.input.favouritesOnly == input.favouritesOnly &&
+            old.input.state.accountGuideOwner == state.accountGuideOwner &&
+            old.input.state.accountSourceGeneration == state.accountSourceGeneration &&
+            old.input.state.channels === state.channels &&
+            old.input.state.programmes === state.programmes &&
+            old.input.state.accountGuideSnapshot === state.accountGuideSnapshot &&
+            old.input.state.accountSources === state.accountSources &&
+            old.input.state.favoriteChannelIds === state.favoriteChannelIds
+    }
+    return previous?.guide?.copy(isPreparing = true) ?: PreparedLiveTvGuide(isPreparing = true)
 }
 
 internal suspend fun prepareLiveTvGuide(state: LiveTvUiState, nowMs: Long, favouritesOnly: Boolean): PreparedLiveTvGuide {

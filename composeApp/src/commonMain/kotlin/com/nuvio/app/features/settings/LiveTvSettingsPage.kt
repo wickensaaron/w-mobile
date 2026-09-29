@@ -56,19 +56,21 @@ internal fun LiveTvTabScreen() {
         LiveTvRepository.ensureLoaded()
         LiveTvRepository.uiState
     }.collectAsStateWithLifecycle()
-    var searchQuery by rememberSaveable { mutableStateOf("") }
-    var favoritesOnly by rememberSaveable { mutableStateOf(false) }
-    var guideMode by rememberSaveable { mutableStateOf(true) }
+    val localProfileId = ProfileRepository.activeProfileId
+    val accountOwner = uiState.accountGuideOwner
+    var searchQuery by rememberSaveable(localProfileId, accountOwner) { mutableStateOf("") }
+    var favoritesOnly by rememberSaveable(localProfileId, accountOwner) { mutableStateOf(false) }
+    var showLiveTv by rememberSaveable(localProfileId, accountOwner) { mutableStateOf(true) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { LiveTvRepository.restoreAccountGuidePreferences() }
     LiveTvTheme {
-        if (guideMode) {
+        if (showLiveTv) {
             LiveTvGuideGrid(
                 uiState = uiState,
                 searchQuery = searchQuery,
                 onSearchQueryChange = { searchQuery = it },
                 favoritesOnly = favoritesOnly,
                 onFavoritesOnlyChange = { favoritesOnly = it },
-                onChannelsClick = { guideMode = false },
+                onChannelsClick = { showLiveTv = false },
             )
         } else {
             val statusBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
@@ -81,7 +83,7 @@ internal fun LiveTvTabScreen() {
                 item(key = "live_tv_tab_title") {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         Text("Live TV settings", style = MaterialTheme.typography.headlineMedium)
-                        OutlinedButton(onClick = { guideMode = true }) { Text("Back to guide") }
+                        OutlinedButton(onClick = { showLiveTv = true }) { Text("Back to Live TV") }
                     }
                 }
                 liveTvSettingsContent(isTablet = false, uiState = uiState)
