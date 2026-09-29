@@ -419,6 +419,8 @@
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-lxml2",
+					"-lz",
 					"-framework",
 					SystemConfiguration,
 				);
@@ -466,6 +468,8 @@
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-lxml2",
+					"-lz",
 					"-framework",
 					SystemConfiguration,
 				);
