@@ -136,6 +136,7 @@ object ProfileRepository {
     }
 
     fun clearInMemory() {
+        DownloadsRepository.clearLocalState()
         generation++
         loadedCacheForUserId = null
         syncIdentity = null

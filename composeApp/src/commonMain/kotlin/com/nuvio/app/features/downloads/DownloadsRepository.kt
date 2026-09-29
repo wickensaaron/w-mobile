@@ -28,6 +28,8 @@ object DownloadsRepository {
     }
 
     fun onProfileChanged() {
+        activeHandles.values.forEach(DownloadsTaskHandle::cancel)
+        activeHandles.clear()
         loadFromDisk()
     }
 

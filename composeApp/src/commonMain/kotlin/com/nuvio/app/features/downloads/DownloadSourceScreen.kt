@@ -60,7 +60,9 @@ fun DownloadSourceScreen(
     val profileState by ProfileRepository.state.collectAsStateWithLifecycle()
     val profileId = ProfileRepository.activeProfileId
     val activeProfileIndex = profileState.activeProfile?.profileIndex ?: profileId
-    val ownerMatches = activeProfileIndex == launch.profileId && profileId == launch.profileId &&
+    val ownerMatches = !launch.downloadOwnerUserId.isNullOrBlank() &&
+        !launch.downloadOwnerProfileId.isNullOrBlank() &&
+        activeProfileIndex == launch.profileId && profileId == launch.profileId &&
         profileState.activeProfile?.userId == launch.downloadOwnerUserId &&
         profileState.activeProfile?.id == launch.downloadOwnerProfileId
     val expectedRequestToken = remember(launch) {
