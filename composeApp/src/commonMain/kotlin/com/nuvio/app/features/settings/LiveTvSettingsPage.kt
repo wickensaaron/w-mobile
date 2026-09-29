@@ -28,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,7 +62,15 @@ internal fun LiveTvTabScreen() {
     var searchQuery by rememberSaveable(localProfileId, accountOwner) { mutableStateOf("") }
     var favoritesOnly by rememberSaveable(localProfileId, accountOwner) { mutableStateOf(false) }
     var showLiveTv by rememberSaveable(localProfileId, accountOwner) { mutableStateOf(true) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { LiveTvRepository.restoreAccountGuidePreferences() }
+    DisposableEffect(Unit) {
+        LiveTvRepository.enterLiveTv()
+        onDispose { LiveTvRepository.leaveLiveTv() }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        LiveTvRepository.enterLiveTv()
+        LiveTvRepository.restoreAccountGuidePreferences()
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { LiveTvRepository.leaveLiveTv() }
     LiveTvTheme {
         if (showLiveTv) {
             LiveTvGuideGrid(

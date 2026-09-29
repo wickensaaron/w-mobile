@@ -50,6 +50,39 @@ object LiveTvRepository {
     private var channelRefreshJob: Job? = null
     private var guideRefreshJob: Job? = null
     private var playbackPreparationJob: Job? = null
+    private var liveTvForeground = false
+    private var liveTvWorkEpoch = 0L
+    private var catalogueNeedsRefresh = true
+    private var guideNeedsRefresh = true
+
+    /** Keep account discovery active globally, but load large provider data only for the Live TV screen. */
+    fun enterLiveTv() {
+        if (liveTvForeground) { ensureLoaded(); return }
+        ensureLoaded()
+        liveTvForeground = true
+        warmLiveTv()
+    }
+
+    /** A player launched from Live TV must retain its independent playback preparation job. */
+    fun leaveLiveTv() {
+        if (!liveTvForeground) return
+        liveTvForeground = false
+        ++liveTvWorkEpoch
+        if (channelRefreshJob?.isActive == true) catalogueNeedsRefresh = true
+        if (guideRefreshJob?.isActive == true) guideNeedsRefresh = true
+        channelRefreshJob?.cancel()
+        guideRefreshJob?.cancel()
+        _uiState.value = _uiState.value.copy(isLoading = false, isGuideLoading = false)
+    }
+
+    private fun warmLiveTv() {
+        if (!liveTvForeground || _uiState.value.isRestoringAccountSources) return
+        if (catalogueNeedsRefresh) {
+            if (channelRefreshJob?.isActive != true) refresh()
+        } else if (guideNeedsRefresh && _uiState.value.hasGuideSources && guideRefreshJob?.isActive != true) {
+            refreshGuide()
+        }
+    }
 
     fun startObserving() {
         if (observerJob != null) return
@@ -57,7 +90,8 @@ object LiveTvRepository {
             combine(AuthRepository.state, ProfileRepository.state, ServerConfigurationRepository.active) { _, _, _ -> SupabaseProvider.client }
                 .collectLatest { client ->
                     ensureLoaded()
-                    client.auth.sessionStatus.collect { ensureLoaded() }
+                    warmLiveTv()
+                    client.auth.sessionStatus.collect { ensureLoaded(); warmLiveTv() }
                 }
         }
     }
@@ -83,6 +117,9 @@ object LiveTvRepository {
         clearStalkerSession()
         ++channelRefreshVersion
         ++guideRefreshVersion
+        ++liveTvWorkEpoch
+        catalogueNeedsRefresh = true
+        guideNeedsRefresh = true
         val playlists = loadSavedPlaylists()
         _uiState.value = LiveTvUiState(
             playlistUrl = playlists.firstEnabledUrlSource(),
@@ -97,16 +134,15 @@ object LiveTvRepository {
             accountSourceGeneration = accountSourceGeneration,
         )
         publishNavigationVisibility()
-        if (_uiState.value.hasPlaylist) {
-            refresh()
-        }
-        if (_uiState.value.guideUrl.isNotBlank()) refreshGuide()
         if (owner != null) restoreAccountSources()
     }
 
     /** One-way pull only. Manual mobile sources are kept in their separate local lane. */
     fun restoreAccountSources() {
         val owner = loadedAccountScope ?: return
+        val profileId = loadedProfileId
+        val configuration = loadedConfiguration
+        val requestedGeneration = accountSourceGeneration
         accountImportJob?.cancel()
         accountGuideJob?.cancel()
         accountGuideSaveJob?.cancel()
@@ -116,10 +152,18 @@ object LiveTvRepository {
         accountImportJob = scope.launch {
             try {
                 val snapshot = LiveTvAccountImport.pull(owner)
-                if (loadedAccountScope != owner || currentLiveTvAccountScope() != owner) return@launch
+                if (loadedAccountScope != owner || currentLiveTvAccountScope() != owner ||
+                    loadedProfileId != profileId || ProfileRepository.activeProfileId != profileId ||
+                    loadedConfiguration != configuration || ServerConfigurationRepository.active.value != configuration ||
+                    accountSourceGeneration != requestedGeneration) return@launch
                 importedSources = snapshot.providers
                 ++accountSourceGeneration
                 playbackPreparationJob?.cancel()
+                channelRefreshJob?.cancel()
+                guideRefreshJob?.cancel()
+                ++liveTvWorkEpoch
+                catalogueNeedsRefresh = true
+                guideNeedsRefresh = true
                 val previousImportedIds = _uiState.value.channels.filter { it.accountScope != null }.map { it.id }.toSet()
                 _uiState.value = _uiState.value.copy(
                     accountSources = importedSources.map(ImportedLiveTvSource::summary),
@@ -133,17 +177,23 @@ object LiveTvRepository {
                     accountGuideSyncMessage = null,
                     isRestoringAccountSources = false,
                     accountSourceErrorMessage = null,
+                    isLoading = false,
+                    isGuideLoading = false,
                 )
                 publishNavigationVisibility()
-                refresh()
+                warmLiveTv()
                 restoreAccountGuidePreferences()
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
                 log.w { "Could not restore account Live TV sources (${error::class.simpleName})" }
-                if (loadedAccountScope == owner && currentLiveTvAccountScope() == owner) {
+                if (loadedAccountScope == owner && currentLiveTvAccountScope() == owner &&
+                    loadedProfileId == profileId && ProfileRepository.activeProfileId == profileId &&
+                    loadedConfiguration == configuration && ServerConfigurationRepository.active.value == configuration &&
+                    accountSourceGeneration == requestedGeneration) {
                     _uiState.value = _uiState.value.copy(isRestoringAccountSources = false,
                         accountSourceErrorMessage = "Account sources could not be restored. Try again when connected.")
+                    warmLiveTv()
                 }
             }
         }
@@ -483,17 +533,21 @@ object LiveTvRepository {
         val configuration = loadedConfiguration
         val profileId = loadedProfileId
         val catalogueVersion = channelRefreshVersion
+        val workEpoch = liveTvWorkEpoch
         val version = ++guideRefreshVersion
         fun isCurrentGuide(): Boolean = version == guideRefreshVersion && generation == accountSourceGeneration &&
+            workEpoch == liveTvWorkEpoch &&
             (sources.isEmpty() || catalogueVersion == channelRefreshVersion) && loadedProfileId == profileId &&
             ProfileRepository.activeProfileId == profileId && loadedConfiguration == configuration &&
             ServerConfigurationRepository.active.value == configuration && loadedAccountScope == owner &&
             currentLiveTvAccountScope() == owner && _uiState.value.guideUrl == url
         if (url.isBlank() && sources.isEmpty()) {
             _uiState.value = _uiState.value.copy(programmes = emptyMap(), isGuideLoading = false, guideErrorMessage = null)
+            guideNeedsRefresh = false
             return
         }
         if (url.isNotBlank() && !url.startsWith("https://", ignoreCase = true) && !url.startsWith("http://", ignoreCase = true)) {
+            guideNeedsRefresh = false
             _uiState.value = _uiState.value.copy(isGuideLoading = false, guideErrorMessage = "Enter an HTTP or HTTPS XMLTV URL.")
             return
         }
@@ -553,6 +607,7 @@ object LiveTvRepository {
                 } ?: return@launch
                 if (isCurrentGuide()) {
                     val (projection, failures) = result
+                    guideNeedsRefresh = false
                     _uiState.value = _uiState.value.copy(programmes = projection.programmes, isGuideLoading = false,
                         guideErrorMessage = if (failures > 0 || projection.wasTruncated) "Some programme guides could not be loaded or exceed the device limit." else null)
                 }
@@ -562,6 +617,7 @@ object LiveTvRepository {
                 // URLs, tokens, and server responses may appear in exception text.
                 log.w { "Failed to load XMLTV guide (${error::class.simpleName})" }
                 if (isCurrentGuide()) {
+                    guideNeedsRefresh = false
                     _uiState.value = _uiState.value.copy(isGuideLoading = false, guideErrorMessage = "Guide could not be loaded.")
                 }
             }
@@ -594,16 +650,22 @@ object LiveTvRepository {
     fun refresh() {
         ensureLoaded()
         channelRefreshJob?.cancel()
+        guideRefreshJob?.cancel()
+        ++guideRefreshVersion
+        guideNeedsRefresh = true
         accountGuideSaveJob?.cancel()
         if (_uiState.value.isAccountGuideSaving) _uiState.value = _uiState.value.copy(isAccountGuideSaving = false,
             accountGuideSyncMessage = "Sources changed before this favourite was confirmed. Refresh choices to check it.")
         val version = ++channelRefreshVersion
+        _uiState.value = _uiState.value.copy(isGuideLoading = false)
         val currentState = _uiState.value
         val sources = importedSources.filter { it.enabled }
         val owner = loadedAccountScope
         val generation = accountSourceGeneration
+        val workEpoch = liveTvWorkEpoch
         val playlists = currentState.playlists
         if (!currentState.hasPlaylist) {
+            catalogueNeedsRefresh = false
             _uiState.value = _uiState.value.copy(
                 playlistUrl = "",
                 playlists = emptyList(),
@@ -619,6 +681,7 @@ object LiveTvRepository {
         val hasEnabledPortal = (currentState.xtreamSettings.isConfigured && currentState.xtreamSettings.isEnabled) ||
             (currentState.stalkerSettings.isConfigured && currentState.stalkerSettings.isEnabled)
         if (enabledPlaylists.isEmpty() && !hasEnabledPortal && sources.isEmpty()) {
+            catalogueNeedsRefresh = false
             _uiState.value = _uiState.value.copy(
                 playlistUrl = "",
                 playlists = playlists,
@@ -741,7 +804,8 @@ object LiveTvRepository {
                 result.toList()
             }
             if (version != channelRefreshVersion || generation != accountSourceGeneration ||
-                loadedAccountScope != owner || currentLiveTvAccountScope() != owner) return@launch
+                workEpoch != liveTvWorkEpoch || loadedAccountScope != owner || currentLiveTvAccountScope() != owner) return@launch
+            catalogueNeedsRefresh = false
             _uiState.value = _uiState.value.copy(
                 playlistUrl = playlists.firstEnabledUrlSource(),
                 playlists = playlists,
@@ -754,7 +818,7 @@ object LiveTvRepository {
                     else -> null
                 },
             )
-            if (sources.isNotEmpty()) refreshGuide()
+            if (_uiState.value.hasGuideSources) refreshGuide()
         }
     }
 
