@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ensureActive
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.download_failed
 import nuvio.composeapp.generated.resources.downloads_error_finalize_file_failed
@@ -30,6 +31,11 @@ import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLRequestReloadIgnoringLocalCacheData
 import platform.Foundation.NSURLResponse
+import platform.Foundation.NSString
+import platform.Foundation.NSUTF8StringEncoding
+import platform.Foundation.create
+import platform.Foundation.stringWithContentsOfFile
+import platform.Foundation.writeToFile
 import platform.Foundation.NSURLSession
 import platform.Foundation.NSURLSessionConfiguration
 import platform.Foundation.NSURLSessionDataDelegateProtocol
@@ -50,6 +56,7 @@ private const val DOWNLOAD_REQUEST_TIMEOUT_SECONDS = 60.0
 private const val DOWNLOAD_RESOURCE_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
 private const val PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 private const val PROGRESS_MIN_BYTE_DELTA = 512L * 1024L
+private const val MAX_VALIDATOR_LENGTH = 256
 
 private val backgroundSessionCompletionHandlers = mutableMapOf<String, () -> Unit>()
 
@@ -81,15 +88,22 @@ internal actual object DownloadsPlatformDownloader {
             val downloadsDirectory = downloadsDirectoryPath()
             val destinationPath = "$downloadsDirectory/${request.destinationFileName}"
             val tempPath = "$downloadsDirectory/${request.destinationFileName}.part"
+            var movedForThisAttempt = false
 
             try {
                 DownloadSubtitles.prepare(request.item, NSURL.fileURLWithPath(destinationPath).absoluteString!!)
                 var resumeFromBytes = fileSizeOrNull(tempPath)?.coerceAtLeast(0L) ?: 0L
+                val resumeValidator = if (resumeFromBytes > 0L) readResumeValidator(tempPath) else null
+                if (resumeFromBytes > 0L && resumeValidator == null) {
+                    check(removePathIfExists(tempPath) && removePathIfExists("$tempPath.validator"))
+                    resumeFromBytes = 0L
+                }
 
-                var attemptedRangeRequest = resumeFromBytes > 0L
+                val attemptedRangeRequest = resumeFromBytes > 0L
                 var result = performDownloadRequest(
                     request = request,
                     rangeStart = if (attemptedRangeRequest) resumeFromBytes else null,
+                    resumeValidator = resumeValidator,
                     resumeFromBytes = resumeFromBytes,
                     tempPath = tempPath,
                     handle = handle,
@@ -97,12 +111,11 @@ internal actual object DownloadsPlatformDownloader {
                 )
 
                 if (attemptedRangeRequest && result.statusCode == 416) {
-                    removePathIfExists(tempPath)
-                    resumeFromBytes = 0L
-                    attemptedRangeRequest = false
+                    check(removePathIfExists(tempPath) && removePathIfExists("$tempPath.validator"))
                     result = performDownloadRequest(
                         request = request,
                         rangeStart = null,
+                        resumeValidator = null,
                         resumeFromBytes = 0L,
                         tempPath = tempPath,
                         handle = handle,
@@ -110,20 +123,16 @@ internal actual object DownloadsPlatformDownloader {
                     )
                 }
 
-                if (result.statusCode !in 200..299) {
+                if (result.statusCode != 200 && result.statusCode != 206) {
                     error(runBlocking { getString(Res.string.network_request_failed_http, result.statusCode) })
                 }
-
-                val isPartialResume = attemptedRangeRequest && result.statusCode == 206 && resumeFromBytes > 0L
-                val startingBytes = if (isPartialResume) resumeFromBytes else 0L
-                val totalBytes = resolveTotalBytes(
-                    startingBytes = startingBytes,
-                    isPartialResume = isPartialResume,
-                    contentRangeHeader = result.contentRange,
-                    contentLength = result.contentLength,
-                )
-
-                removePathIfExists(destinationPath)
+                job.ensureActive()
+                val finalPartialSize = fileSizeOrNull(tempPath)
+                if (finalPartialSize == null || finalPartialSize <= 0L ||
+                    (result.expectedTotalBytes != null && finalPartialSize != result.expectedTotalBytes)
+                ) error("Incomplete download")
+                check(removePathIfExists("$tempPath.validator"))
+                if (!removePathIfExists(destinationPath)) error("Could not replace existing download")
                 val moved = NSFileManager.defaultManager.moveItemAtPath(
                     srcPath = tempPath,
                     toPath = destinationPath,
@@ -132,14 +141,17 @@ internal actual object DownloadsPlatformDownloader {
                 if (!moved) {
                     error(runBlocking { getString(Res.string.downloads_error_finalize_file_failed) })
                 }
-
+                movedForThisAttempt = true
+                job.ensureActive()
                 val localFileUri = NSURL.fileURLWithPath(destinationPath).absoluteString ?: "file://$destinationPath"
                 val finalSize = fileSizeOrNull(destinationPath)
-                onSuccess(localFileUri, totalBytes ?: finalSize)
+                onSuccess(localFileUri, result.expectedTotalBytes ?: finalSize)
             } catch (_: CancellationException) {
                 handle.cancelNativeTask()
-            } catch (error: Throwable) {
-                onFailure(error.message ?: runBlocking { getString(Res.string.download_failed) })
+                if (movedForThisAttempt) removePathIfExists(destinationPath)
+            } catch (_: Throwable) {
+                // Platform and subtitle failures can contain provider URLs or local paths.
+                onFailure(runBlocking { getString(Res.string.download_failed) })
             }
         }
 
@@ -167,7 +179,8 @@ internal actual object DownloadsPlatformDownloader {
     actual fun removePartialFile(destinationFileName: String): Boolean {
         val destinationPath = "${downloadsDirectoryPath()}/$destinationFileName"
         DownloadSubtitleStorage(NSURL.fileURLWithPath(destinationPath).absoluteString!!).remove()
-        return removePathIfExists("$destinationPath.part")
+        val partialPath = "$destinationPath.part"
+        return removePathIfExists(partialPath) && removePathIfExists("$partialPath.validator")
     }
 
     actual fun resolveLocalFileUri(localFileUri: String?, destinationFileName: String): String? {
@@ -199,6 +212,31 @@ internal actual object DownloadsPlatformDownloader {
     }
 }
 
+@OptIn(ExperimentalForeignApi::class)
+private fun readResumeValidator(partialPath: String): IosResumeValidator? {
+    val stored = NSString.stringWithContentsOfFile("$partialPath.validator", NSUTF8StringEncoding, null)
+        ?.toString() ?: return null
+    val separator = stored.indexOf(':')
+    if (separator < 1) return null
+    val header = stored.substring(0, separator)
+    val value = stored.substring(separator + 1)
+    return when (header) {
+        "ETag" -> iosResumeValidator(value)
+        else -> null
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun saveResumeValidator(partialPath: String, validator: IosResumeValidator?) {
+    val path = "$partialPath.validator"
+    if (validator == null) {
+        check(removePathIfExists(path))
+    } else {
+        check(NSString.create(string = "${validator.header}:${validator.value}")
+            .writeToFile(path, true, NSUTF8StringEncoding, null))
+    }
+}
+
 private class IosDownloadsTaskHandle(
     private val job: Job,
 ) : DownloadsTaskHandle {
@@ -225,14 +263,75 @@ private class IosDownloadsTaskHandle(
 
 private data class IosDownloadResult(
     val statusCode: Int,
-    val contentRange: String?,
-    val contentLength: Long?,
+    val expectedTotalBytes: Long?,
 )
+
+internal data class IosResumeValidator(val header: String, val value: String)
+
+internal data class IosDownloadRange(val start: Long, val end: Long, val total: Long)
+
+internal fun parseIosDownloadRange(header: String?): IosDownloadRange? {
+    val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)", RegexOption.IGNORE_CASE)
+        .matchEntire(header?.trim().orEmpty()) ?: return null
+    val start = match.groupValues[1].toLongOrNull() ?: return null
+    val end = match.groupValues[2].toLongOrNull() ?: return null
+    val total = match.groupValues[3].toLongOrNull() ?: return null
+    return IosDownloadRange(start, end, total).takeIf {
+        it.start >= 0L && it.end >= it.start && it.total > it.end
+    }
+}
+
+internal fun iosResumeValidator(etag: String?): IosResumeValidator? {
+    fun safe(value: String?): String? = value?.trim()?.takeIf {
+        it.isNotEmpty() && it.length <= MAX_VALIDATOR_LENGTH && it.none { c -> c.code < 32 || c.code == 127 }
+    }
+    safe(etag)?.takeUnless { it.startsWith("W/", ignoreCase = true) }
+        ?.let { return IosResumeValidator("ETag", it) }
+    return null
+}
+
+internal fun validateIosDownloadResponse(
+    status: Int,
+    requestedOffset: Long,
+    previousValidator: IosResumeValidator?,
+    responseValidator: IosResumeValidator?,
+    contentRange: String?,
+    contentLength: String?,
+    contentType: String?,
+): Long? {
+    if (status != 200 && status != 206) throw IllegalStateException("Invalid download response")
+    val type = contentType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+    if (type.isNotEmpty() && !(
+            type.startsWith("video/") || type.startsWith("audio/") ||
+                type in setOf(
+                    "application/octet-stream", "application/mp4", "application/x-matroska",
+                    "application/ogg", "application/vnd.ms-asf", "application/mp2t",
+                    "application/x-mpeg-ts", "application/x-msvideo", "application/x-flv",
+                )
+        )
+    ) throw IllegalStateException("Response is not a direct media file")
+    val length = contentLength?.trim()?.toLongOrNull()
+    if (contentLength != null && (length == null || length <= 0L)) {
+        throw IllegalStateException("Invalid download length")
+    }
+    if (status == 200) {
+        if (contentRange != null) throw IllegalStateException("Unexpected download range")
+        return length
+    }
+    val range = parseIosDownloadRange(contentRange)
+        ?: throw IllegalStateException("Invalid download range")
+    if (requestedOffset <= 0L || previousValidator == null || responseValidator != previousValidator ||
+        range.start != requestedOffset || range.end != range.total - 1L ||
+        (length != null && length != range.end - range.start + 1L)
+    ) throw IllegalStateException("Download source changed during resume")
+    return range.total
+}
 
 @OptIn(ExperimentalForeignApi::class)
 private class IosDownloadDelegate(
     private val attemptedRangeRequest: Boolean,
     private val resumeFromBytes: Long,
+    private val resumeValidator: IosResumeValidator?,
     private val tempPath: String,
     private val onProgress: (downloadedBytes: Long, totalBytes: Long?) -> Unit,
 ) : NSObject(), NSURLSessionDataDelegateProtocol {
@@ -254,38 +353,45 @@ private class IosDownloadDelegate(
         didReceiveResponse: NSURLResponse,
         completionHandler: (Long) -> Unit,
     ) {
-        val httpResponse = didReceiveResponse as? NSHTTPURLResponse
-        val statusCode = httpResponse?.statusCode?.toInt() ?: 200
-        val nextResult = IosDownloadResult(
-            statusCode = statusCode,
-            contentRange = httpResponse?.valueForHTTPHeaderField("Content-Range"),
-            contentLength = httpResponse
-                ?.valueForHTTPHeaderField("Content-Length")
-                ?.toLongOrNull()
-                ?.takeIf { it > 0L },
-        )
-        result = nextResult
-
-        if (statusCode in 200..299) {
-            val isPartialResume = attemptedRangeRequest && statusCode == 206 && resumeFromBytes > 0L
-            startingBytesForResponse = if (isPartialResume) resumeFromBytes else 0L
-            bytesWrittenForResponse = 0L
-            totalBytesForResponse = resolveTotalBytes(
-                startingBytes = startingBytesForResponse,
-                isPartialResume = isPartialResume,
-                contentRangeHeader = nextResult.contentRange,
-                contentLength = nextResult.contentLength,
-            )
-
-            outputFile = fopen(tempPath, if (isPartialResume) "ab" else "wb") ?: run {
-                fileError = IllegalStateException(runBlocking { getString(Res.string.downloads_error_open_partial_file_failed) })
-                null
+        try {
+            val httpResponse = didReceiveResponse as? NSHTTPURLResponse
+                ?: throw IllegalStateException("Invalid download response")
+            val statusCode = httpResponse.statusCode.toInt()
+            if (statusCode == 416 && attemptedRangeRequest) {
+                result = IosDownloadResult(statusCode, null)
+                completionHandler(1L)
+                return
             }
-
-            reportProgress(startingBytesForResponse, totalBytesForResponse)
+            if (statusCode != 200 && statusCode != 206) {
+                result = IosDownloadResult(statusCode, null)
+                completionHandler(1L)
+                return
+            }
+            val responseValidator = iosResumeValidator(
+                httpResponse.valueForHTTPHeaderField("ETag"),
+            )
+            val total = validateIosDownloadResponse(
+                status = statusCode,
+                requestedOffset = if (attemptedRangeRequest) resumeFromBytes else 0L,
+                previousValidator = resumeValidator,
+                responseValidator = responseValidator,
+                contentRange = httpResponse.valueForHTTPHeaderField("Content-Range"),
+                contentLength = httpResponse.valueForHTTPHeaderField("Content-Length"),
+                contentType = httpResponse.valueForHTTPHeaderField("Content-Type"),
+            )
+            startingBytesForResponse = if (statusCode == 206) resumeFromBytes else 0L
+            bytesWrittenForResponse = 0L
+            totalBytesForResponse = total
+            outputFile = fopen(tempPath, if (statusCode == 206) "ab" else "wb")
+                ?: throw IllegalStateException(runBlocking { getString(Res.string.downloads_error_open_partial_file_failed) })
+            saveResumeValidator(tempPath, responseValidator)
+            result = IosDownloadResult(statusCode, total)
+            reportProgress(startingBytesForResponse, total)
+            completionHandler(1L)
+        } catch (error: Throwable) {
+            fileError = error
+            completionHandler(0L)
         }
-
-        completionHandler(1L)
     }
 
     override fun URLSession(
@@ -293,7 +399,8 @@ private class IosDownloadDelegate(
         dataTask: NSURLSessionDataTask,
         didReceiveData: NSData,
     ) {
-        if (fileError != null) return
+        val responseStatus = result?.statusCode
+        if (fileError != null || (responseStatus != 200 && responseStatus != 206)) return
 
         val file = outputFile ?: run {
             fileError = IllegalStateException(runBlocking { getString(Res.string.downloads_error_partial_file_not_open) })
@@ -327,20 +434,20 @@ private class IosDownloadDelegate(
     ) {
         closeOutputFile()
 
-        if (didCompleteWithError != null) {
-            completion.completeExceptionally(
-                IllegalStateException(didCompleteWithError.localizedDescription),
-            )
-            return
-        }
-
         val error = fileError
         if (error != null) {
             completion.completeExceptionally(error)
             return
         }
-
-        completion.complete(result ?: task.response.toDownloadResult())
+        if (didCompleteWithError != null) {
+            completion.completeExceptionally(
+                IllegalStateException("Download connection failed"),
+            )
+            return
+        }
+        val finished = result
+        if (finished == null) completion.completeExceptionally(IllegalStateException("Missing download response"))
+        else completion.complete(finished)
     }
 
     override fun URLSessionDidFinishEventsForBackgroundURLSession(session: NSURLSession) {
@@ -381,18 +488,6 @@ private class IosDownloadDelegate(
     }
 }
 
-private fun NSURLResponse?.toDownloadResult(): IosDownloadResult {
-    val httpResponse = this as? NSHTTPURLResponse
-    return IosDownloadResult(
-        statusCode = httpResponse?.statusCode?.toInt() ?: 200,
-        contentRange = httpResponse?.valueForHTTPHeaderField("Content-Range"),
-        contentLength = httpResponse
-            ?.valueForHTTPHeaderField("Content-Length")
-            ?.toLongOrNull()
-            ?.takeIf { it > 0L },
-    )
-}
-
 @OptIn(ExperimentalForeignApi::class)
 private fun downloadsDirectoryPath(): String {
     val root = NSHomeDirectory().trimEnd('/')
@@ -416,6 +511,7 @@ private fun removePathIfExists(path: String): Boolean {
 private suspend fun performDownloadRequest(
     request: DownloadPlatformRequest,
     rangeStart: Long?,
+    resumeValidator: IosResumeValidator?,
     resumeFromBytes: Long,
     tempPath: String,
     handle: IosDownloadsTaskHandle,
@@ -432,15 +528,21 @@ private suspend fun performDownloadRequest(
     nativeRequest.setAllowsExpensiveNetworkAccess(true)
     nativeRequest.setAllowsConstrainedNetworkAccess(true)
     request.sourceHeaders.forEach { (key, value) ->
-        nativeRequest.setValue(value, forHTTPHeaderField = key)
+        if (key.lowercase() !in setOf("range", "if-range", "accept-encoding")) {
+            nativeRequest.setValue(value, forHTTPHeaderField = key)
+        }
     }
+    nativeRequest.setValue("identity", forHTTPHeaderField = "Accept-Encoding")
     if (rangeStart != null && rangeStart > 0L) {
         nativeRequest.setValue("bytes=$rangeStart-", forHTTPHeaderField = "Range")
+        checkNotNull(resumeValidator)
+        nativeRequest.setValue(resumeValidator.value, forHTTPHeaderField = "If-Range")
     }
 
     val delegate = IosDownloadDelegate(
         attemptedRangeRequest = rangeStart != null && rangeStart > 0L,
         resumeFromBytes = resumeFromBytes,
+        resumeValidator = resumeValidator,
         tempPath = tempPath,
         onProgress = onProgress,
     )
@@ -489,29 +591,4 @@ private fun String.toLocalPath(): String? {
         return NSURL(string = value).path ?: value.removePrefix("file://")
     }
     return value.takeIf { it.isNotBlank() }
-}
-
-private fun resolveTotalBytes(
-    startingBytes: Long,
-    isPartialResume: Boolean,
-    contentRangeHeader: String?,
-    contentLength: Long?,
-): Long? {
-    parseContentRangeTotal(contentRangeHeader)?.let { return it }
-    val normalizedLength = contentLength?.takeIf { it > 0L } ?: return null
-    return if (isPartialResume && startingBytes > 0L) {
-        startingBytes + normalizedLength
-    } else {
-        normalizedLength
-    }
-}
-
-private fun parseContentRangeTotal(headerValue: String?): Long? {
-    val value = headerValue?.trim().orEmpty()
-    if (value.isBlank()) return null
-    val slashIndex = value.lastIndexOf('/')
-    if (slashIndex == -1 || slashIndex == value.lastIndex) return null
-    val totalPart = value.substring(slashIndex + 1).trim()
-    if (totalPart == "*") return null
-    return totalPart.toLongOrNull()?.takeIf { it > 0L }
 }
