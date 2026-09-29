@@ -156,7 +156,8 @@ internal fun LiveTvGuideGrid(
                     PhoneModeButton("Guide", guideTab, Modifier.weight(1f)) { guideTab = true }
                 }
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PhoneFilterButton("All UK", !favoritesOnly && !sportOnly) {
+                    PhoneFilterButton(if (uiState.accountGuideSnapshot?.preferences?.ukOnly == false) "All channels" else "All UK",
+                        !favoritesOnly && !sportOnly) {
                         sportOnly = false; onFavoritesOnlyChange(false)
                     }
                     PhoneFilterButton("Favourites", favoritesOnly) {
@@ -244,7 +245,8 @@ internal fun LiveTvGuideGrid(
 }
 
 private fun LiveTvAccountGuideRow.isSportChannel(): Boolean {
-    return channelNumber in 401..499 || sportGroupName.containsMatchIn(channel.group.orEmpty().lowercase())
+    return channelNumber?.let { it in 401..499 } == true ||
+        sportGroupName.containsMatchIn(channel.group.orEmpty().lowercase())
 }
 
 @Composable
@@ -357,8 +359,11 @@ private fun PhoneGuideRow(row: LiveTvAccountGuideRow, programmes: List<LiveTvPro
                     color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                 PhoneFavourite(row, uiState, nowMs)
             }
-            Text(row.displayName, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Box(modifier = Modifier.fillMaxWidth().height(40.dp)
+                .clickable { LiveTvRepository.requestPlayback(row.channel) }, contentAlignment = Alignment.CenterStart) {
+                Text(row.displayName, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
         Box(modifier = Modifier.weight(1f).fillMaxHeight().horizontalScroll(scrollState)) {
             Box(modifier = Modifier.width(totalWidth).fillMaxHeight()) {
