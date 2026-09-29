@@ -338,7 +338,10 @@ actual fun PlatformPlayerSurface(
                 lastReportedError = errorMessage
                 latestOnError.value(errorMessage)
             }
-            delay(250L)
+            // mpv events refresh the native state when playback changes. Read
+            // UI snapshots less often during playback, and less again while
+            // paused or ended, so the player does less work over a long video.
+            delay(if (snapshot.isPlaying || snapshot.isLoading) 500L else 1_000L)
         }
     }
 
