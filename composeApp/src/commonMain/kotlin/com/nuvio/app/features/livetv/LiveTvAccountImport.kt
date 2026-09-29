@@ -13,6 +13,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpMethod
+import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
 import io.ktor.utils.io.readAvailable
@@ -30,6 +31,38 @@ import kotlinx.serialization.json.Json
 
 internal const val MobileLiveTvCatalogueLimit = 100_000
 internal const val MobileLiveTvProgrammeLimit = 100_000
+
+internal class LiveTvGuideLoadException(val userMessage: String) : IllegalStateException(userMessage)
+
+private sealed interface ImportedGuideResponse {
+    data class Redirect(val location: String) : ImportedGuideResponse
+    data class Parsed(val guide: ImportedXmlTvResult) : ImportedGuideResponse
+}
+
+/** Resolve only provider-supplied web redirects; never copy credentials to a new URL ourselves. */
+internal fun resolveImportedGuideRedirect(current: String, location: String): String {
+    val next = location.trim()
+    require(next.isNotEmpty() && next.length <= 65_536 && next.none { it.isWhitespace() || it == '\\' || it == '#' }) {
+        "Invalid Live TV guide redirect"
+    }
+    val origin = Regex("^https?://[^/?#]+", RegexOption.IGNORE_CASE).find(current)?.value
+        ?: error("Invalid Live TV guide endpoint")
+    val candidate = when {
+        next.startsWith("https://", true) || next.startsWith("http://", true) -> next
+        next.startsWith("//") -> current.substringBefore(':') + ":" + next
+        next.startsWith('/') -> origin + next
+        next.startsWith('?') -> current.substringBefore('?') + next
+        else -> current.substringBefore('?').substringBeforeLast('/') + "/" + next
+    }
+    require(candidate.length <= 65_536 && candidate.substringAfter("://").substringBefore('/').substringBefore('?').none { it == '@' }) {
+        "Invalid Live TV guide redirect"
+    }
+    val before = Url(current)
+    val after = Url(candidate)
+    require(after.host.isNotBlank() && after.protocol.name in setOf("http", "https") &&
+        (before.protocol.name != "https" || after.protocol.name == "https")) { "Unsafe Live TV guide redirect" }
+    return candidate
+}
 
 /** Scope and catalogue generation are process-only; no source credentials are persisted. */
 data class LiveTvAccountScope(val backend: String, val account: String, val profile: Int)
@@ -153,7 +186,8 @@ internal object LiveTvAccountImport {
      * Identity encoding is requested to avoid invisible engine decoding. If the server ignores it,
      * the delivered-byte budget counts whatever the engine actually exposes (compressed OR already
      * decoded); a second independent budget counts XML bytes after optional gzip magic detection.
-     * No response string, full byte array, disk file, redirect or retry is used for this guide lane.
+     * No response string, full byte array, disk file or retry is used for this guide lane.
+     * Bounded HTTP redirects match the TV app's provider handling.
      */
     suspend fun providerGuide(
         url: String,
@@ -173,34 +207,69 @@ internal object LiveTvAccountImport {
             withTimeout(180_000) {
                 val collector = ImportedXmlTvCollector(sourceId, channels, Clock.System.now().toEpochMilliseconds(),
                     currentCoroutineContext(), isCurrent, limits)
-                http.prepareRequest(url) {
-                    method = HttpMethod.Get
-                    header("Accept", "application/xml, text/xml, application/gzip, */*")
-                    header("Accept-Encoding", "identity")
-                    timeout { requestTimeoutMillis = 180_000; connectTimeoutMillis = 15_000; socketTimeoutMillis = 30_000 }
-                }.execute { response ->
+                var address = url
+                val visited = mutableSetOf<String>()
+                repeat(4) {
                     collector.checkCurrent()
-                    check(response.status.value in 200..299) { "Live TV guide request failed" }
-                    val channel = response.bodyAsChannel()
-                    val deliveredBudget = ImportedXmlTvByteBudget(limits.deliveredBytes)
-                    val result = parseImportedXmlTvStream(read = { buffer ->
+                    if (!visited.add(address)) throw LiveTvGuideLoadException("The provider's guide redirect loops. Check its guide URL in Sources.")
+                    val outcome = http.prepareRequest(address) {
+                        method = HttpMethod.Get
+                        header("User-Agent", "WTV/1.0")
+                        header("Accept", "application/xml, text/xml, */*")
+                        header("Accept-Encoding", "identity")
+                        timeout { requestTimeoutMillis = 180_000; connectTimeoutMillis = 15_000; socketTimeoutMillis = 30_000 }
+                    }.execute { response ->
                         collector.checkCurrent()
-                        val size = channel.readAvailable(buffer)
-                        collector.checkCurrent()
-                        if (size > 0) {
-                            deliveredBudget.accept(size)
-                        } else if (size == 0) yield()
-                        size
-                    }, collector, limits)
-                    collector.checkCurrent()
-                    result
+                        val status = response.status.value
+                        if (status in 300..399) {
+                            ImportedGuideResponse.Redirect(response.headers[HttpHeaders.Location].orEmpty())
+                        } else {
+                            if (status !in 200..299) throw LiveTvGuideLoadException(
+                                "The provider rejected its programme guide (HTTP $status). Check Sources and retry.")
+                            val channel = response.bodyAsChannel()
+                            val deliveredBudget = ImportedXmlTvByteBudget(limits.deliveredBytes)
+                            val result = try {
+                                parseImportedXmlTvStream(read = { buffer ->
+                                    collector.checkCurrent()
+                                    val size = channel.readAvailable(buffer)
+                                    collector.checkCurrent()
+                                    if (size > 0) deliveredBudget.accept(size) else if (size == 0) yield()
+                                    size
+                                }, collector, limits)
+                            } catch (error: kotlinx.coroutines.CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                throw LiveTvGuideLoadException("The provider's programme guide could not be read on this device.")
+                            }
+                            collector.checkCurrent()
+                            ImportedGuideResponse.Parsed(result)
+                        }
+                    }
+                    when (outcome) {
+                        is ImportedGuideResponse.Parsed -> return@withTimeout outcome.guide
+                        is ImportedGuideResponse.Redirect -> {
+                            address = try { resolveImportedGuideRedirect(address, outcome.location) }
+                                catch (error: Exception) {
+                                    throw LiveTvGuideLoadException("The provider sent an invalid guide redirect. Check Sources.")
+                                }
+                        }
+                    }
                 }
+                throw LiveTvGuideLoadException("The provider redirected its programme guide too many times.")
             }
         } catch (error: TimeoutCancellationException) {
             // A provider deadline is a load failure; caller/sign-out cancellation still propagates.
             currentCoroutineContext().ensureActive()
             check(isCurrent()) { "Live TV guide source changed" }
-            throw IllegalStateException("Live TV guide timed out")
+            throw LiveTvGuideLoadException("The provider's programme guide timed out. Retry in a moment.")
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: LiveTvGuideLoadException) {
+            throw error
+        } catch (error: Exception) {
+            currentCoroutineContext().ensureActive()
+            check(isCurrent()) { "Live TV guide source changed" }
+            throw LiveTvGuideLoadException("Could not connect to the provider's programme guide. Check Sources and retry.")
         }
     }
 

@@ -63,6 +63,7 @@ internal suspend fun fetchXtreamChannels(
             headers = streamRequestHeaders,
             streamType = extension,
             guideId = item.string("epg_channel_id") ?: item.string("tvg_id"),
+            archive = parseLiveTvXtreamArchiveCapability(item.string("tv_archive"), item.string("tv_archive_duration")),
         )
     }
     return if (accountSource == null) channels.distinctBy { it.streamUrl } else channels

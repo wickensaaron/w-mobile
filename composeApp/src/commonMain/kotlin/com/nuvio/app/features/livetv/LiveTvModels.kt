@@ -15,6 +15,7 @@ data class LiveTvChannel(
     val accountScope: LiveTvAccountScope? = null,
     val accountSourceGeneration: Long? = null,
     val sourceLoadGeneration: Int? = null,
+    val archive: LiveTvArchiveCapability? = null,
 )
 
 data class LiveTvProgramme(
@@ -67,6 +68,7 @@ data class LiveTvUiState(
     val programmes: Map<String, List<LiveTvProgramme>> = emptyMap(),
     val isGuideLoading: Boolean = false,
     val guideErrorMessage: String? = null,
+    val guideRequestFailed: Boolean = false,
     val favoriteChannelIds: Set<String> = emptySet(),
     val lastWatchedChannelId: String? = null,
     val isNavigationEnabled: Boolean = true,

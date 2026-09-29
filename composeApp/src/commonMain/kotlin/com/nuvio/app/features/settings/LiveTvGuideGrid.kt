@@ -103,6 +103,7 @@ internal fun LiveTvGuideGrid(
     var selectedStartMs by remember(localProfileId, accountOwner) { mutableStateOf<Long?>(null) }
     val keyboard = LocalSoftwareKeyboardController.current
     val prepared = rememberPreparedLiveTvGuide(uiState, nowMs, favoritesOnly)
+    val guideUnavailable = uiState.guideRequestFailed && uiState.programmes.isEmpty()
     val visibleRows = remember(prepared.presentation.rows, prepared.programmesByChannelId, searchQuery, sportOnly, nowMs) {
         filterLiveTvAccountGuideRows(prepared.presentation.rows, searchQuery).filter { row ->
             (!sportOnly || row.isSportChannel()) &&
@@ -174,7 +175,8 @@ internal fun LiveTvGuideGrid(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (guideTab) "Programme guide" else "On now", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f))
-                    Text("${visibleRows.size} channels", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (guideUnavailable) "Guide unavailable" else "${visibleRows.size} channels",
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (uiState.isLoading || uiState.isRestoringAccountSources) Text("Restoring your channels…", style = MaterialTheme.typography.bodySmall)
                 if (uiState.isGuideLoading || prepared.isPreparing) Text("Loading programme data…", style = MaterialTheme.typography.bodySmall)
@@ -233,9 +235,10 @@ internal fun LiveTvGuideGrid(
         if (visibleRows.isEmpty() && !prepared.isPreparing && !uiState.isGuideLoading && !uiState.isLoading && !uiState.isRestoringAccountSources) {
             item(key = "live_empty") {
                 Column(modifier = Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(if (favoritesOnly) "No favourites with programme data" else "No matching programmes",
+                    Text(if (guideUnavailable) "Programme guide unavailable" else if (favoritesOnly) "No favourites with programme data" else "No matching programmes",
                         style = MaterialTheme.typography.titleMedium)
-                    Text("Channels without EPG are hidden. Change the search or guide choices in Settings.",
+                    Text(if (guideUnavailable) "The guide request failed. Retry above or check your provider in Sources."
+                        else "Channels without EPG are hidden. Change the search or guide choices in Settings.",
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = onChannelsClick) { Text("Sources & settings") }
                 }

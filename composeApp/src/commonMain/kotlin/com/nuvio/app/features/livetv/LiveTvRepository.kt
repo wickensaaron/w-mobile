@@ -518,6 +518,7 @@ object LiveTvRepository {
             guideUrl = normalized,
             programmes = emptyMap(),
             guideErrorMessage = null,
+            guideRequestFailed = false,
         )
         refreshGuide()
     }
@@ -542,21 +543,24 @@ object LiveTvRepository {
             ServerConfigurationRepository.active.value == configuration && loadedAccountScope == owner &&
             currentLiveTvAccountScope() == owner && _uiState.value.guideUrl == url
         if (url.isBlank() && sources.isEmpty()) {
-            _uiState.value = _uiState.value.copy(programmes = emptyMap(), isGuideLoading = false, guideErrorMessage = null)
+            _uiState.value = _uiState.value.copy(programmes = emptyMap(), isGuideLoading = false,
+                guideErrorMessage = null, guideRequestFailed = false)
             guideNeedsRefresh = false
             return
         }
         if (url.isNotBlank() && !url.startsWith("https://", ignoreCase = true) && !url.startsWith("http://", ignoreCase = true)) {
             guideNeedsRefresh = false
-            _uiState.value = _uiState.value.copy(isGuideLoading = false, guideErrorMessage = "Enter an HTTP or HTTPS XMLTV URL.")
+            _uiState.value = _uiState.value.copy(isGuideLoading = false,
+                guideErrorMessage = "Enter an HTTP or HTTPS XMLTV URL.", guideRequestFailed = true)
             return
         }
-        _uiState.value = _uiState.value.copy(isGuideLoading = true, guideErrorMessage = null)
+        _uiState.value = _uiState.value.copy(isGuideLoading = true, guideErrorMessage = null, guideRequestFailed = false)
         guideRefreshJob = scope.launch {
             try {
                 val result = withContext(Dispatchers.Default) {
                     val projection = LiveTvGuideProjection()
                     var failures = 0
+                    var providerFailureMessage: String? = null
                     val channelsBySource = mutableMapOf<String, MutableList<LiveTvChannel>>()
                     currentState.channels.forEachIndexed { index, channel ->
                         if (index % 256 == 0) {
@@ -601,17 +605,19 @@ object LiveTvRepository {
                         }.onFailure {
                             if (it is CancellationException) throw it
                             failures++
+                            if (it is LiveTvGuideLoadException) providerFailureMessage = it.userMessage
                         }
                     }
-                    projection.snapshot() to failures
+                    Triple(projection.snapshot(), failures, providerFailureMessage)
                 } ?: return@launch
                 if (isCurrentGuide()) {
-                    val (projection, failures) = result
+                    val (projection, failures, providerFailureMessage) = result
                     guideNeedsRefresh = false
                     _uiState.value = _uiState.value.copy(programmes = projection.programmes, isGuideLoading = false,
+                        guideRequestFailed = projection.programmeCount == 0 && failures > 0,
                         guideErrorMessage = when {
                             projection.programmeCount == 0 && failures > 0 ->
-                                "Programme guide could not load. Check the provider guide in Sources, then retry."
+                                providerFailureMessage ?: "Programme guide could not load. Check the provider guide in Sources, then retry."
                             projection.programmeCount == 0 ->
                                 "No upcoming programmes matched these channels. Check their guide IDs in Sources."
                             failures > 0 || projection.wasTruncated ->
@@ -626,7 +632,8 @@ object LiveTvRepository {
                 log.w { "Failed to load XMLTV guide (${error::class.simpleName})" }
                 if (isCurrentGuide()) {
                     guideNeedsRefresh = false
-                    _uiState.value = _uiState.value.copy(isGuideLoading = false, guideErrorMessage = "Guide could not be loaded.")
+                    _uiState.value = _uiState.value.copy(isGuideLoading = false,
+                        guideErrorMessage = "Guide could not be loaded.", guideRequestFailed = true)
                 }
             }
         }
