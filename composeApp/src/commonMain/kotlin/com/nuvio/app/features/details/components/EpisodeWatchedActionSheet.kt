@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAddCheckCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +44,7 @@ fun EpisodeWatchedActionSheet(
     onToggleWatched: () -> Unit,
     onTogglePreviousWatched: () -> Unit,
     onToggleSeasonWatched: () -> Unit,
+    onDownload: (() -> Unit)? = null,
     showPlayManually: Boolean = false,
     onPlayManually: (() -> Unit)? = null,
 ) {
@@ -67,6 +69,19 @@ fun EpisodeWatchedActionSheet(
                 seasonLabel = seasonLabel,
             )
             NuvioBottomSheetDivider()
+            if (onDownload != null) {
+                NuvioBottomSheetActionRow(
+                    icon = Icons.Default.Download,
+                    title = stringResource(Res.string.streams_download_file),
+                    onClick = {
+                        onDownload()
+                        coroutineScope.launch {
+                            dismissNuvioBottomSheet(sheetState = sheetState, onDismiss = onDismiss)
+                        }
+                    },
+                )
+                NuvioBottomSheetDivider()
+            }
             NuvioBottomSheetActionRow(
                 icon = Icons.Default.CheckCircle,
                 title = if (isEpisodeWatched) {

@@ -125,7 +125,7 @@ object DownloadsRepository {
             ?.takeIf { it.isNotBlank() }
             ?: return DownloadEnqueueResult.MissingUrl
 
-        if (!sourceUrl.isSupportedDownloadUrl()) {
+        if (!stream.isDirectFileDownloadSource) {
             return DownloadEnqueueResult.UnsupportedFormat
         }
 
@@ -419,7 +419,11 @@ object DownloadsRepository {
         val resolvedUri = DownloadsPlatformDownloader.resolveLocalFileUri(
             localFileUri = item.localFileUri,
             destinationFileName = item.fileName,
-        ) ?: return item
+        ) ?: return item.copy(
+            status = DownloadStatus.Failed,
+            localFileUri = null,
+            errorMessage = runBlocking { getString(Res.string.downloads_file_missing) },
+        )
         return if (resolvedUri != item.localFileUri) {
             item.copy(localFileUri = resolvedUri)
         } else {
@@ -553,9 +557,18 @@ private fun String.fileExtensionFromUrl(): String {
     }
 }
 
+internal val StreamItem.isDirectFileDownloadSource: Boolean
+    get() = !isWCoreStream &&
+        !isTorrentStream &&
+        normalizeDownloadStreamType(streamType) !in setOf("hls", "dash", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml") &&
+        playableDirectUrl?.isSupportedDownloadUrl() == true
+
+private fun normalizeDownloadStreamType(type: String?): String? = type?.trim()?.lowercase()
+
 private fun String.isSupportedDownloadUrl(): Boolean {
     val normalized = trim().lowercase()
     if (normalized.startsWith("magnet:")) return false
+    if (normalized.endsWith(".m3u") || normalized.contains(".m3u?")) return false
     if (normalized.endsWith(".m3u8") || normalized.contains(".m3u8?")) return false
     if (normalized.endsWith(".mpd") || normalized.contains(".mpd?")) return false
     if (normalized.endsWith(".torrent") || normalized.contains(".torrent?")) return false

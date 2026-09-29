@@ -23,6 +23,7 @@ import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.debrid.toastMessage
 import com.nuvio.app.features.details.MetaDetailsRepository
+import com.nuvio.app.features.downloads.DownloadSourceScreen
 import com.nuvio.app.features.p2p.P2pConsentDialog
 import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.player.PlayerLaunch
@@ -76,6 +77,19 @@ internal fun StreamDestination(
         LaunchedEffect(route.launchId) {
             onBack()
         }
+        return
+    }
+    if (launch.downloadSelectionMode) {
+        val downloadsTitle = stringResource(Res.string.compose_settings_root_downloads_title)
+        DownloadSourceScreen(
+            launch = launch,
+            onBack = onBack,
+            onOpenDownloads = {
+                navController.navigate(DownloadsLibraryRoute(title = downloadsTitle, showActive = true)) {
+                    popUpTo<StreamRoute> { inclusive = true }
+                }
+            },
+        )
         return
     }
     val launchProfileId = remember(route.launchId) { launch.profileId ?: ProfileRepository.activeProfileId }

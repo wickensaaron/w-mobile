@@ -354,6 +354,7 @@ internal fun MainAppContent(
     val continueWatchingSettingsTitle = stringResource(Res.string.compose_settings_page_continue_watching)
     val debridSettingsTitle = stringResource(Res.string.compose_settings_page_debrid)
     val downloadsSettingsTitle = stringResource(Res.string.compose_settings_root_downloads_title)
+    val downloadPickerTitle = stringResource(Res.string.downloads_choose_source)
     val addonsSettingsTitle = stringResource(Res.string.compose_settings_page_addons)
     val pluginsSettingsTitle = stringResource(Res.string.compose_settings_page_plugins)
     val accountSettingsTitle = stringResource(Res.string.compose_settings_page_account)
@@ -1055,6 +1056,37 @@ internal fun MainAppContent(
                 )
             }
 
+        val onDownload: ContentPlayAction =
+            { type, videoId, parentMetaId, parentMetaType, title, logo, poster, background, seasonNumber, episodeNumber, episodeTitle, episodeThumbnail, pauseDescription, _ ->
+                if (!PlaybackAvailability.current().canStream(type, videoId)) {
+                    NuvioToastController.show(playbackUnavailableMessage)
+                } else {
+                    val streamLaunchId = StreamLaunchStore.put(
+                        StreamLaunch(
+                            profileId = activePlaybackProfileId,
+                            type = type,
+                            videoId = videoId,
+                            parentMetaId = parentMetaId,
+                            parentMetaType = parentMetaType,
+                            title = title,
+                            logo = logo,
+                            poster = poster,
+                            background = background,
+                            seasonNumber = seasonNumber,
+                            episodeNumber = episodeNumber,
+                            episodeTitle = episodeTitle,
+                            episodeThumbnail = episodeThumbnail,
+                            pauseDescription = pauseDescription,
+                            manualSelection = true,
+                            downloadSelectionMode = true,
+                            downloadOwnerUserId = ProfileRepository.state.value.activeProfile?.userId,
+                            downloadOwnerProfileId = ProfileRepository.state.value.activeProfile?.id,
+                        ),
+                    )
+                    navController.navigate(StreamRoute(launchId = streamLaunchId, title = downloadPickerTitle))
+                }
+            }
+
         val onCatalogClick: (HomeCatalogSection) -> Unit = { section ->
             val launchId = CatalogLaunchStore.put(
                 CatalogLaunch(
@@ -1351,6 +1383,7 @@ internal fun MainAppContent(
                                     )
                                 },
                                 onLibrarySectionViewAllClick = onLibrarySectionViewAllClick,
+                                onLibraryDownloadsClick = { navController.navigate(DownloadsLibraryRoute(downloadsSettingsTitle)) },
                                 onCloudFilePlay = { item, file ->
                                     coroutineScope.launch {
                                         val resumeItem = WatchProgressRepository
@@ -1480,6 +1513,7 @@ internal fun MainAppContent(
                         navController = navController,
                         onPlay = onPlay,
                         onPlayManually = onPlayManually,
+                        onDownload = onDownload,
                         sharedTransitionScope = this@SharedTransitionLayout,
                         animatedVisibilityScope = LocalNavAnimatedContentScope.current,
                     )
@@ -1579,6 +1613,13 @@ internal fun MainAppContent(
                         route = route,
                         navController = navController,
                         useNativeNavigation = useNativeNavigation,
+                        onOpenDownload = ::openDownloadedItem,
+                    )
+                }
+                entry<DownloadsLibraryRoute> { route ->
+                    DownloadsLibraryDestination(
+                        route = route,
+                        navController = navController,
                         onOpenDownload = ::openDownloadedItem,
                     )
                 }

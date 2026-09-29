@@ -37,6 +37,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -957,6 +962,19 @@ private fun EpisodeHorizontalCard(
                 fillColor = MaterialTheme.colorScheme.primary,
             )
         }
+        if (onLongPress != null) {
+            IconButton(
+                onClick = onLongPress,
+                modifier = Modifier.align(Alignment.TopStart).padding(5.dp)
+                    .size(44.dp).background(Color.Black.copy(alpha = 0.62f), CircleShape),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.MoreHoriz,
+                    contentDescription = stringResource(Res.string.downloads_episode_actions),
+                    tint = Color.White,
+                )
+            }
+        }
     }
 }
 
@@ -1255,7 +1273,7 @@ private fun EpisodeListCard(
                     .weight(1f)
                     .padding(
                         start = sizing.contentHorizontalPadding,
-                        end = sizing.contentHorizontalPadding,
+                        end = sizing.contentHorizontalPadding + if (onLongPress != null) 44.dp else 0.dp,
                         top = sizing.contentVerticalPadding,
                         bottom = sizing.contentVerticalPadding,
                     ),
@@ -1331,6 +1349,19 @@ private fun EpisodeListCard(
                     fillColor = MaterialTheme.colorScheme.primary,
                 )
             }
+        if (onLongPress != null) {
+            IconButton(
+                onClick = onLongPress,
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp)
+                    .size(44.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.90f), CircleShape),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.MoreHoriz,
+                    contentDescription = stringResource(Res.string.downloads_episode_actions),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
     }
 }
 

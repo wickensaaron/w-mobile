@@ -36,9 +36,11 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAddCheckCircle
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.MaterialTheme
@@ -164,6 +166,7 @@ fun MetaDetailsScreen(
     onBack: () -> Unit,
     onPlay: ((type: String, videoId: String, parentMetaId: String, parentMetaType: String, title: String, logo: String?, poster: String?, background: String?, seasonNumber: Int?, episodeNumber: Int?, episodeTitle: String?, episodeThumbnail: String?, pauseDescription: String?, resumePositionMs: Long?) -> Unit)? = null,
     onPlayManually: ((type: String, videoId: String, parentMetaId: String, parentMetaType: String, title: String, logo: String?, poster: String?, background: String?, seasonNumber: Int?, episodeNumber: Int?, episodeTitle: String?, episodeThumbnail: String?, pauseDescription: String?, resumePositionMs: Long?) -> Unit)? = null,
+    onDownload: ((type: String, videoId: String, parentMetaId: String, parentMetaType: String, title: String, logo: String?, poster: String?, background: String?, seasonNumber: Int?, episodeNumber: Int?, episodeTitle: String?, episodeThumbnail: String?, pauseDescription: String?, resumePositionMs: Long?) -> Unit)? = null,
     onOpenMeta: ((MetaPreview) -> Unit)? = null,
     onCastClick: ((MetaPerson, String?) -> Unit)? = null,
     onCompanyClick: ((MetaCompany, String) -> Unit)? = null,
@@ -918,6 +921,68 @@ fun MetaDetailsScreen(
                         savedProgress?.lastPositionMs,
                     )
                 }
+                val onEpisodeDownloadClick: (MetaVideo) -> Unit = { video ->
+                    if (video.season != null && video.episode != null) {
+                        val episodeVideoId = video.id.takeIf { it.isNotBlank() }
+                            ?: buildPlaybackVideoId(
+                                parentMetaId = meta.id,
+                                seasonNumber = video.season,
+                                episodeNumber = video.episode,
+                                fallbackVideoId = video.id,
+                            )
+                        onDownload?.invoke(
+                            meta.type,
+                            episodeVideoId,
+                            meta.id,
+                            meta.type,
+                            meta.name,
+                            meta.logo,
+                            meta.poster,
+                            meta.background,
+                            video.season,
+                            video.episode,
+                            video.title,
+                            video.thumbnail,
+                            video.overview,
+                            null,
+                        )
+                    }
+                }
+                val onPrimaryDownloadClick: (() -> Unit)? = onDownload?.let { download ->
+                    when {
+                        (meta.type == "series" || hasEpisodes) &&
+                            seriesAction?.seasonNumber != null && seriesAction.episodeNumber != null -> {
+                            {
+                                download(
+                                    meta.type,
+                                    seriesStreamVideoId ?: seriesAction.videoId,
+                                    meta.id,
+                                    meta.type,
+                                    meta.name,
+                                    meta.logo,
+                                    meta.poster,
+                                    meta.background,
+                                    seriesAction.seasonNumber,
+                                    seriesAction.episodeNumber,
+                                    seriesAction.episodeTitle,
+                                    seriesAction.episodeThumbnail,
+                                    seriesPauseDescription,
+                                    null,
+                                )
+                            }
+                        }
+                        meta.type == "movie" && !hasEpisodes -> {
+                            {
+                                download(
+                                    meta.type, meta.id, meta.id, meta.type, meta.name,
+                                    meta.logo, meta.poster, meta.background,
+                                    null, null, null, null, meta.description, null,
+                                )
+                            }
+                        }
+                        else -> null
+                    }
+                }
                 val listState = rememberLazyListState()
                 val heroStretchState = rememberHeroStretchState(listState)
                 val density = LocalDensity.current
@@ -1103,6 +1168,7 @@ fun MetaDetailsScreen(
                                     isWatched = isWatched,
                                     onPrimaryPlayClick = onPrimaryPlayClick,
                                     onPrimaryPlayLongClick = onPrimaryPlayLongClick,
+                                    onDownloadClick = onPrimaryDownloadClick,
                                     onSaveClick = toggleSaved,
                                     onSaveLongClick = openLibraryListPicker,
                                     onWatchedClick = toggleWatched,
@@ -1285,6 +1351,9 @@ fun MetaDetailsScreen(
                                         areCurrentlyWatched = isSeasonWatched,
                                     )
                                 },
+                                onDownload = if (onDownload != null && playbackAvailability.canStream(meta.type, selectedEpisode.id)) {
+                                    { onEpisodeDownloadClick(selectedEpisode) }
+                                } else null,
                                 showPlayManually = showManualPlayOption && playbackAvailability.canStream(meta.type, selectedEpisode.id),
                                 onPlayManually = {
                                     onEpisodeManualPlayClick(selectedEpisode)
@@ -1788,6 +1857,7 @@ private fun LazyListScope.configuredMetaSectionItems(
     isWatched: Boolean,
     onPrimaryPlayClick: () -> Unit,
     onPrimaryPlayLongClick: (() -> Unit)?,
+    onDownloadClick: (() -> Unit)?,
     onSaveClick: () -> Unit,
     onSaveLongClick: (() -> Unit)?,
     onWatchedClick: () -> Unit,
@@ -1871,6 +1941,7 @@ private fun LazyListScope.configuredMetaSectionItems(
                     isWatched = isWatched,
                     onPrimaryPlayClick = onPrimaryPlayClick,
                     onPrimaryPlayLongClick = onPrimaryPlayLongClick,
+                    onDownloadClick = onDownloadClick,
                     onSaveClick = onSaveClick,
                     onSaveLongClick = onSaveLongClick,
                     onWatchedClick = onWatchedClick,
@@ -2098,6 +2169,7 @@ private fun ConfiguredMetaSections(
     isWatched: Boolean,
     onPrimaryPlayClick: () -> Unit,
     onPrimaryPlayLongClick: (() -> Unit)?,
+    onDownloadClick: (() -> Unit)?,
     onSaveClick: () -> Unit,
     onSaveLongClick: (() -> Unit)?,
     onWatchedClick: () -> Unit,
@@ -2199,6 +2271,20 @@ private fun ConfiguredMetaSections(
                             stringResource(Res.string.action_choose_source) else null,
                         onChooseSourceClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,
                     )
+                    if (onDownloadClick != null) {
+                        OutlinedButton(
+                            onClick = onDownloadClick,
+                            modifier = Modifier.widthIn(max = if (isTablet) 520.dp else 420.dp).fillMaxWidth(),
+                        ) {
+                            androidx.compose.material3.Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text(stringResource(Res.string.streams_download_file))
+                        }
+                    }
                     WCoreAcquisitionAction(meta)
                 }
             }

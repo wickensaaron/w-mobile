@@ -23,6 +23,7 @@ import com.nuvio.app.navigation.CollectionsRoute
 import com.nuvio.app.navigation.DetailRoute
 import com.nuvio.app.navigation.DownloadShowRoute
 import com.nuvio.app.navigation.DownloadsSettingsRoute
+import com.nuvio.app.navigation.DownloadsLibraryRoute
 import com.nuvio.app.navigation.FolderDetailRoute
 import com.nuvio.app.navigation.NuvioNavigator
 import com.nuvio.app.navigation.SettingsPageRoute
@@ -84,6 +85,20 @@ internal fun DownloadsDestination(
         } else {
             null
         },
+    )
+}
+
+@Composable
+internal fun DownloadsLibraryDestination(
+    route: DownloadsLibraryRoute,
+    navController: NuvioNavigator,
+    onOpenDownload: (DownloadItem) -> Unit,
+) {
+    DownloadsScreen(
+        onBack = rememberGuardedPopBackStack(navController, route),
+        onOpenDownload = onOpenDownload,
+        initialShowActive = route.showActive,
+        showOpenFolderAction = false,
     )
 }
 
