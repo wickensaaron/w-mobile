@@ -311,7 +311,8 @@ private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProg
                 Text(row.channelNumber?.let { "$it · ${row.displayName}" } ?: row.displayName,
                     style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(current?.title ?: "Programme information pending", style = MaterialTheme.typography.bodySmall,
+                Text(current?.title ?: next?.let { "Guide starts ${formatLocalHourMinute(it.startEpochMs)} · ${it.title}" }
+                    ?: "Programme information pending", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             PhoneFavourite(row, uiState, nowMs)
@@ -323,7 +324,7 @@ private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProg
             Text("Live · ${formatLocalHourMinute(current.startEpochMs)} – ${formatLocalHourMinute(current.stopEpochMs)}",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
-        if (next != null) Text("Next  ${formatLocalHourMinute(next.startEpochMs)} · ${next.title}",
+        if (current != null && next != null) Text("Next  ${formatLocalHourMinute(next.startEpochMs)} · ${next.title}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
