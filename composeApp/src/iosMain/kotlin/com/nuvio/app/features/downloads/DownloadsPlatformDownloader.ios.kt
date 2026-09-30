@@ -9,9 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.download_failed
 import nuvio.composeapp.generated.resources.downloads_error_finalize_file_failed
@@ -107,7 +110,9 @@ internal actual object DownloadsPlatformDownloader {
                     resumeFromBytes = resumeFromBytes,
                     tempPath = tempPath,
                     handle = handle,
-                    onProgress = onProgress,
+                    onProgress = { downloadedBytes, totalBytes ->
+                        scope.launch(Dispatchers.Main) { onProgress(downloadedBytes, totalBytes) }
+                    },
                 )
 
                 if (attemptedRangeRequest && result.statusCode == 416) {
@@ -119,7 +124,9 @@ internal actual object DownloadsPlatformDownloader {
                         resumeFromBytes = 0L,
                         tempPath = tempPath,
                         handle = handle,
-                        onProgress = onProgress,
+                        onProgress = { downloadedBytes, totalBytes ->
+                            scope.launch(Dispatchers.Main) { onProgress(downloadedBytes, totalBytes) }
+                        },
                     )
                 }
 
@@ -145,13 +152,17 @@ internal actual object DownloadsPlatformDownloader {
                 job.ensureActive()
                 val localFileUri = NSURL.fileURLWithPath(destinationPath).absoluteString ?: "file://$destinationPath"
                 val finalSize = fileSizeOrNull(destinationPath)
-                onSuccess(localFileUri, result.expectedTotalBytes ?: finalSize)
+                withContext(Dispatchers.Main) {
+                    onSuccess(localFileUri, result.expectedTotalBytes ?: finalSize)
+                }
             } catch (_: CancellationException) {
                 handle.cancelNativeTask()
                 if (movedForThisAttempt) removePathIfExists(destinationPath)
             } catch (_: Throwable) {
                 // Platform and subtitle failures can contain provider URLs or local paths.
-                onFailure(runBlocking { getString(Res.string.download_failed) })
+                withContext(Dispatchers.Main) {
+                    onFailure(getString(Res.string.download_failed))
+                }
             }
         }
 
@@ -564,13 +575,14 @@ private suspend fun performDownloadRequest(
     val task = session.dataTaskWithRequest(nativeRequest)
 
     handle.attach(task, session)
-    onProgress(resumeFromBytes.coerceAtLeast(0L), null)
-    task.resume()
-
     return try {
+        currentCoroutineContext().ensureActive()
+        onProgress(resumeFromBytes.coerceAtLeast(0L), null)
+        task.resume()
         delegate.awaitCompletion()
     } finally {
-        session.finishTasksAndInvalidate()
+        if (currentCoroutineContext().isActive) session.finishTasksAndInvalidate()
+        else session.invalidateAndCancel()
     }
 }
 
