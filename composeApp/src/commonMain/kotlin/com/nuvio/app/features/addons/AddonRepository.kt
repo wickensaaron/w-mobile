@@ -4,7 +4,6 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.sync.decodeRecoverableAccountPayload
-import com.nuvio.app.core.sync.canSeedEmptyAccountList
 import com.nuvio.app.core.sync.AccountReplacement
 import com.nuvio.app.core.sync.replayAccountReplacement
 import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
@@ -159,7 +158,12 @@ object AddonRepository {
         val epoch = generation
         syncMutex.withLock {
             val isCurrent = { generation == epoch && currentProfileId == effectiveProfileId && currentNuvioSyncIdentity() == owner }
-            if (!isCurrent() || !replayAddons(effectiveProfileId, isCurrent)) return@withLock
+            if (!isCurrent()) return@withLock
+            // A fresh install may have only the provisional starter catalog. Its first
+            // local edit must not replace an account's existing cloud addon list.
+            if (loadSyncState(effectiveProfileId).hasRemoteSnapshot && !replayAddons(effectiveProfileId, isCurrent)) {
+                return@withLock
+            }
             pullRemoteAddons(effectiveProfileId, owner, isCurrent)
         }
     }
@@ -175,7 +179,9 @@ object AddonRepository {
                 }
                 .decodeList<AddonRow>()
 
-            if (!isCurrent() || loadSyncState(profileId).pending != null) return@runCatching
+            if (!isCurrent()) return@runCatching
+            val stored = loadSyncState(profileId)
+            if (stored.hasRemoteSnapshot && stored.pending != null) return@runCatching
             val rowsByUrl = linkedMapOf<String, AddonRow>()
             rows.forEach { row ->
                 val manifestUrl = ensureManifestSuffix(row.url)
@@ -187,24 +193,18 @@ object AddonRepository {
             val urls = rowsByUrl.keys.toList()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
 
-            if (urls.isEmpty() && AddonStorage.loadInstalledAddonUrls(profileId).isNotEmpty()) {
-                val stored = loadSyncState(profileId)
-                // An empty new account can seed first-launch defaults or its own local list.
-                // Legacy records without an owner remain local and are not silently imported.
-                if (canSeedEmptyAccountList(
-                    storedOwner = stored.owner,
-                    currentOwner = owner,
-                    hasRemoteSnapshot = stored.hasRemoteSnapshot,
-                    starterPending = AddonStorage.loadStarterBootstrapStatus(profileId) == STARTER_BOOTSTRAP_PENDING,
-                )) {
+            if (!stored.hasRemoteSnapshot) {
+                if (urls.isEmpty()) {
+                    // Keep the provisional local list for recovery, but never let a
+                    // first-run starter list replace remote rows after a stale/empty read.
                     initialize()
-                    queueCurrentAddons(profileId)
-                    replayAddons(profileId, isCurrent)
                     return@runCatching
                 }
-                if (!stored.hasRemoteSnapshot && stored.owner == null) {
-                    initialize()
-                    return@runCatching
+                // Remote rows establish the first authoritative snapshot. An edit made
+                // before that read was based on an incomplete list, so discard its
+                // replacement intent rather than deleting unseen cloud addons.
+                if (stored.pending != null) {
+                    saveSyncState(profileId, stored.copy(pending = null))
                 }
             }
 
@@ -469,6 +469,7 @@ object AddonRepository {
 
     private suspend fun replayAddons(profileId: Int, isCurrent: () -> Boolean): Boolean {
         val stored = loadSyncState(profileId)
+        if (!stored.hasRemoteSnapshot) return false
         val pending = stored.pending
         return replayAccountReplacement(
             pending = pending,
@@ -504,10 +505,14 @@ object AddonRepository {
         pushJob = scope.launch {
             try {
                 delay(ADDON_PUSH_DEBOUNCE_MS)
-                syncMutex.withLock {
-                    replayAddons(profileId) {
-                        generation == epoch && currentNuvioSyncIdentity() == owner
+                if (loadSyncState(profileId).hasRemoteSnapshot) {
+                    syncMutex.withLock {
+                        replayAddons(profileId) {
+                            generation == epoch && currentNuvioSyncIdentity() == owner
+                        }
                     }
+                } else if (generation == epoch && currentNuvioSyncIdentity() == owner) {
+                    pullFromServer(profileId)
                 }
             } finally {
                 if (pushJobsByProfile[profileId] === pushJob) pushJobsByProfile.remove(profileId)
