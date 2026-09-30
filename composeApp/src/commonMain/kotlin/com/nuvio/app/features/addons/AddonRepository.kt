@@ -49,7 +49,7 @@ private data class AddonRow(
 )
 
 @Serializable
-private data class AddonPushItem(
+internal data class AddonPushItem(
     val url: String,
     val name: String = "",
     val enabled: Boolean = true,
@@ -60,6 +60,8 @@ private data class AddonPushItem(
 private data class StoredAddonSync(
     val owner: String? = null,
     val hasRemoteSnapshot: Boolean = false,
+    val remoteRevision: Long? = null,
+    val remoteItems: List<AddonPushItem> = emptyList(),
     val pending: AccountReplacement<AddonPushItem>? = null,
     val names: Map<String, String> = emptyMap(),
     val recoveryPayload: String? = null,
@@ -69,6 +71,56 @@ private const val ADDON_PUSH_DEBOUNCE_MS = 500L
 private const val STARTER_BOOTSTRAP_PENDING = "pending"
 private const val STARTER_BOOTSTRAP_DONE = "done"
 private val STARTER_ADDON_URLS = listOf("https://catalog.nuvio.tv/manifest.json")
+private const val ADDON_SNAPSHOT_READ_ATTEMPTS = 3
+
+private data class RemoteAddonSnapshot(
+    val revision: Long,
+    val rows: List<AddonRow>,
+)
+
+private fun AddonRow.toPushItem(index: Int) = AddonPushItem(
+    url = url,
+    name = name.orEmpty(),
+    enabled = enabled,
+    sortOrder = index,
+)
+
+/** Reapply only edits made against the last confirmed list to a newer remote list. */
+internal fun rebaseAddonEdits(
+    base: List<AddonPushItem>,
+    edited: List<AddonPushItem>,
+    latest: List<AddonPushItem>,
+): List<AddonPushItem> {
+    val baseByUrl = base.associateBy(AddonPushItem::url)
+    val editedByUrl = edited.associateBy(AddonPushItem::url)
+    val removedUrls = baseByUrl.keys - editedByUrl.keys
+    val changedByUrl = editedByUrl.filter { (url, item) ->
+        val previous = baseByUrl[url]
+        previous != null && (previous.name != item.name || previous.enabled != item.enabled)
+    }
+    val merged = latest.filterNot { it.url in removedUrls }.map { item ->
+        changedByUrl[item.url]?.let { edit ->
+            item.copy(name = edit.name, enabled = edit.enabled)
+        } ?: item
+    }.toMutableList()
+    val latestUrls = latest.mapTo(mutableSetOf(), AddonPushItem::url)
+    merged += edited.filter { it.url !in baseByUrl && it.url !in latestUrls }
+
+    val baseOrder = base.map(AddonPushItem::url).filter { it in editedByUrl }
+    val editedOrder = edited.map(AddonPushItem::url).filter { it in baseByUrl }
+    val ordered = if (baseOrder == editedOrder) merged else {
+        val mergedByUrl = merged.associateBy(AddonPushItem::url)
+        (edited.mapNotNull { mergedByUrl[it.url] } + merged.filter { it.url !in editedByUrl })
+            .distinctBy(AddonPushItem::url)
+    }
+    return ordered.mapIndexed { index, item -> item.copy(sortOrder = index) }
+}
+
+private fun Throwable.isAddonRevisionConflict(): Boolean =
+    generateSequence(this) { it.cause }.any { error ->
+        val message = error.message.orEmpty()
+        "Addon sync revision conflict" in message || "40001" in message
+    }
 
 object AddonRepository {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -161,16 +213,17 @@ object AddonRepository {
             if (!isCurrent()) return@withLock
             // A fresh install may have only the provisional starter catalog. Its first
             // local edit must not replace an account's existing cloud addon list.
-            if (loadSyncState(effectiveProfileId).hasRemoteSnapshot && !replayAddons(effectiveProfileId, isCurrent)) {
+            val stored = loadSyncState(effectiveProfileId)
+            if (stored.owner == owner && stored.remoteRevision != null && !replayAddons(effectiveProfileId, isCurrent)) {
                 return@withLock
             }
             pullRemoteAddons(effectiveProfileId, owner, isCurrent)
         }
     }
 
-    private suspend fun pullRemoteAddons(profileId: Int, owner: String, isCurrent: () -> Boolean) {
-        log.i { "pullFromServer() — profileId=$profileId, initialized=$initialized" }
-        runCatching {
+    private suspend fun readRemoteSnapshot(profileId: Int): RemoteAddonSnapshot {
+        repeat(ADDON_SNAPSHOT_READ_ATTEMPTS) {
+            val revisionBefore = getRemoteRevision(profileId)
             val rows = SupabaseProvider.client.postgrest
                 .from("addons")
                 .select {
@@ -178,10 +231,30 @@ object AddonRepository {
                     order("sort_order", Order.ASCENDING)
                 }
                 .decodeList<AddonRow>()
+            val revisionAfter = getRemoteRevision(profileId)
+            if (revisionBefore == revisionAfter) {
+                return RemoteAddonSnapshot(revisionBefore, rows)
+            }
+        }
+        error("Addon list changed during sync; retry shortly")
+    }
+
+    private suspend fun getRemoteRevision(profileId: Int): Long =
+        SupabaseProvider.client.postgrest.rpc(
+            "sync_get_addon_revision",
+            buildJsonObject { put("p_profile_id", profileId) },
+        ).decodeAs<Long>()
+
+    private suspend fun pullRemoteAddons(profileId: Int, owner: String, isCurrent: () -> Boolean) {
+        log.i { "pullFromServer() — profileId=$profileId, initialized=$initialized" }
+        runCatching {
+            val snapshot = readRemoteSnapshot(profileId)
+            val rows = snapshot.rows
 
             if (!isCurrent()) return@runCatching
             val stored = loadSyncState(profileId)
-            if (stored.hasRemoteSnapshot && stored.pending != null) return@runCatching
+            val ownsSnapshot = stored.owner == owner
+            if (ownsSnapshot && stored.remoteRevision != null && stored.pending != null) return@runCatching
             val rowsByUrl = linkedMapOf<String, AddonRow>()
             rows.forEach { row ->
                 val manifestUrl = ensureManifestSuffix(row.url)
@@ -193,19 +266,35 @@ object AddonRepository {
             val urls = rowsByUrl.keys.toList()
             log.i { "pullFromServer() — server returned ${rows.size} addons" }
 
-            if (!stored.hasRemoteSnapshot) {
+            val localUrls = AddonStorage.loadInstalledAddonUrls(profileId)
+            val provisionalStarter = urls.isEmpty() &&
+                AddonStorage.loadStarterBootstrapStatus(profileId) == STARTER_BOOTSTRAP_PENDING &&
+                localUrls.all { it in STARTER_ADDON_URLS } && (!ownsSnapshot || stored.remoteItems.isEmpty())
+            if (provisionalStarter || (urls.isEmpty() && localUrls.isEmpty())) {
+                // The account is empty at a stable revision. Keep any provisional
+                // starter visible; later edits can use a checked write at this revision.
+                saveSyncState(profileId, stored.copy(
+                    owner = owner,
+                    hasRemoteSnapshot = true,
+                    remoteRevision = snapshot.revision,
+                    remoteItems = emptyList(),
+                    pending = stored.pending?.takeIf { it.owner == owner },
+                ))
+                if (stored.pending?.owner == owner) replayAddons(profileId, isCurrent)
+                return@runCatching
+            }
+            if (!ownsSnapshot || !stored.hasRemoteSnapshot) {
                 if (urls.isEmpty()) {
-                    // Keep the provisional local list for recovery, but never let a
-                    // first-run starter list replace remote rows after a stale/empty read.
-                    initialize()
+                    // Preserve an older local list for recovery rather than promoting
+                    // it to an account-wide replacement without an authoritative base.
                     return@runCatching
                 }
                 // Remote rows establish the first authoritative snapshot. An edit made
                 // before that read was based on an incomplete list, so discard its
                 // replacement intent rather than deleting unseen cloud addons.
-                if (stored.pending != null) {
-                    saveSyncState(profileId, stored.copy(pending = null))
-                }
+            }
+            if ((!ownsSnapshot || stored.remoteRevision == null) && stored.pending != null) {
+                saveSyncState(profileId, stored.copy(pending = null))
             }
 
             val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
@@ -222,6 +311,8 @@ object AddonRepository {
             saveSyncState(profileId, StoredAddonSync(
                 owner = owner,
                 hasRemoteSnapshot = true,
+                remoteRevision = snapshot.revision,
+                remoteItems = rowsByUrl.values.mapIndexed { index, row -> row.toPushItem(index) },
                 names = rowsByUrl.mapNotNull { (url, row) -> row.name?.let { url to it } }.toMap(),
                 recoveryPayload = loadSyncState(profileId).recoveryPayload,
             ))
@@ -461,17 +552,25 @@ object AddonRepository {
         saveSyncState(profileId, StoredAddonSync(
             owner = owner,
             hasRemoteSnapshot = stored.owner == owner && stored.hasRemoteSnapshot,
+            remoteRevision = stored.remoteRevision.takeIf { stored.owner == owner },
+            remoteItems = stored.remoteItems.takeIf { stored.owner == owner }.orEmpty(),
             pending = AccountReplacement(owner, items),
             names = items.associate { it.url to it.name },
             recoveryPayload = stored.recoveryPayload,
         ))
     }
 
-    private suspend fun replayAddons(profileId: Int, isCurrent: () -> Boolean): Boolean {
+    private suspend fun replayAddons(
+        profileId: Int,
+        isCurrent: () -> Boolean,
+        conflictRetry: Int = 0,
+    ): Boolean {
         val stored = loadSyncState(profileId)
-        if (!stored.hasRemoteSnapshot) return false
+        val expectedRevision = stored.remoteRevision ?: return false
         val pending = stored.pending
-        return replayAccountReplacement(
+        var newRevision: Long? = null
+        var failure: Throwable? = null
+        val replayed = replayAccountReplacement(
             pending = pending,
             currentOwner = ::currentNuvioSyncIdentity,
             isCurrent = { isCurrent() && loadSyncState(profileId).pending == pending },
@@ -479,16 +578,56 @@ object AddonRepository {
                 val params = buildJsonObject {
                     put("p_profile_id", profileId)
                     put("p_addons", json.encodeToJsonElement(addons))
+                    put("p_expected_revision", expectedRevision)
                     putSyncOriginClientId()
                 }
-                SupabaseProvider.client.postgrest.rpc("sync_push_addons", params)
+                newRevision = SupabaseProvider.client.postgrest
+                    .rpc("sync_push_addons_checked", params)
+                    .decodeAs<Long>()
             },
-            acknowledge = {
-                saveSyncState(profileId, loadSyncState(profileId).copy(pending = null, hasRemoteSnapshot = true))
+            acknowledge = { acknowledged ->
+                saveSyncState(profileId, loadSyncState(profileId).copy(
+                    pending = null,
+                    hasRemoteSnapshot = true,
+                    remoteRevision = checkNotNull(newRevision),
+                    remoteItems = acknowledged.items,
+                ))
                 AddonStorage.saveStarterBootstrapStatus(profileId, STARTER_BOOTSTRAP_DONE)
             },
-            onFailure = { error -> log.w { "Keeping local addons for retry (${error::class.simpleName})" } },
+            onFailure = { error ->
+                failure = error
+                log.w { "Keeping local addons for retry (${error::class.simpleName})" }
+            },
         )
+        if (replayed || conflictRetry >= 2 || failure?.isAddonRevisionConflict() != true) return replayed
+
+        val snapshot = runCatching { readRemoteSnapshot(profileId) }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            log.w { "Could not refresh addons after a revision conflict (${error::class.simpleName})" }
+            return false
+        }
+        val current = loadSyncState(profileId)
+        if (!isCurrent() || pending == null || current.pending != pending) return false
+        val latest = snapshot.rows
+            .map { row -> row.copy(url = ensureManifestSuffix(row.url)) }
+            .distinctBy(AddonRow::url)
+            .mapIndexed { index, row -> row.toPushItem(index) }
+        val rebased = rebaseAddonEdits(stored.remoteItems, pending.items, latest)
+        saveSyncState(profileId, current.copy(
+            remoteRevision = snapshot.revision,
+            remoteItems = latest,
+            pending = AccountReplacement(pending.owner, rebased),
+        ))
+        val existingByUrl = _uiState.value.addons.associateBy(ManagedAddon::manifestUrl)
+        _uiState.value = AddonsUiState(addons = rebased.map { item ->
+            existingByUrl[item.url].toPendingAddon(
+                manifestUrl = item.url,
+                userSetName = item.name.takeIf { it.isNotBlank() },
+                enabled = item.enabled,
+            )
+        })
+        persist()
+        return replayAddons(profileId, isCurrent, conflictRetry + 1)
     }
 
     private fun pushToServer() {
@@ -505,11 +644,12 @@ object AddonRepository {
         pushJob = scope.launch {
             try {
                 delay(ADDON_PUSH_DEBOUNCE_MS)
-                if (loadSyncState(profileId).hasRemoteSnapshot) {
+                if (loadSyncState(profileId).remoteRevision != null) {
                     syncMutex.withLock {
-                        replayAddons(profileId) {
-                            generation == epoch && currentNuvioSyncIdentity() == owner
-                        }
+                        replayAddons(
+                            profileId,
+                            isCurrent = { generation == epoch && currentNuvioSyncIdentity() == owner },
+                        )
                     }
                 } else if (generation == epoch && currentNuvioSyncIdentity() == owner) {
                     pullFromServer(profileId)
