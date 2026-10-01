@@ -91,6 +91,7 @@ internal actual object DownloadsPlatformDownloader {
     }
 
     actual fun removePartialFile(destinationFileName: String): Boolean {
+        NSNotificationCenter.defaultCenter.postNotificationName(discardNotification, destinationFileName)
         val destinationPath = "${downloadsDirectoryPath()}/$destinationFileName"
         DownloadSubtitleStorage(NSURL.fileURLWithPath(destinationPath).absoluteString!!).remove()
         val partialPath = "$destinationPath.part"

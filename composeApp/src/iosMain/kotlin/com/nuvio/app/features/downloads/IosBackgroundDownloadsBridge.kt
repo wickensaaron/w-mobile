@@ -15,6 +15,8 @@ import platform.Foundation.NSURL
 
 private const val startNotification = "WMediaBackgroundDownloadStart"
 private const val cancelNotification = "WMediaBackgroundDownloadCancel"
+private const val pauseNotification = "WMediaBackgroundDownloadPause"
+internal const val discardNotification = "WMediaBackgroundDownloadDiscard"
 
 @Serializable
 private data class BackgroundDownloadStart(
@@ -67,6 +69,12 @@ internal object IosBackgroundDownloadsBridge {
                 callbacks.remove(id)
                 subtitleJobs.remove(id)?.cancel()
                 NSNotificationCenter.defaultCenter.postNotificationName(cancelNotification, id)
+            }
+
+            override fun pause() {
+                callbacks.remove(id)
+                subtitleJobs.remove(id)?.cancel()
+                NSNotificationCenter.defaultCenter.postNotificationName(pauseNotification, id)
             }
         }
     }

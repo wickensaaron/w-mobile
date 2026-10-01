@@ -3,6 +3,8 @@ import ComposeApp
 
 private let backgroundDownloadStart = Notification.Name("WMediaBackgroundDownloadStart")
 private let backgroundDownloadCancel = Notification.Name("WMediaBackgroundDownloadCancel")
+private let backgroundDownloadPause = Notification.Name("WMediaBackgroundDownloadPause")
+private let backgroundDownloadDiscard = Notification.Name("WMediaBackgroundDownloadDiscard")
 
 private struct BackgroundDownloadRequest: Decodable {
     let id: String
@@ -26,6 +28,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private var observers: [NSObjectProtocol] = []
     private var records: [String: BackgroundDownloadRecord] = [:]
     private var pendingStarts = Set<String>()
+    private var pausingIds = Set<String>()
+    private var startsWaitingForPause: [String: String] = [:]
+    private var discardedFileNames = Set<String>()
     private var completedFiles: [String: (URL, Int64)] = [:]
     private var backgroundCompletion: (() -> Void)?
 
@@ -59,6 +64,12 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         observers.append(center.addObserver(forName: backgroundDownloadCancel, object: nil, queue: .main) { [weak self] note in
             self?.cancelDownload(note.object as? String)
         })
+        observers.append(center.addObserver(forName: backgroundDownloadPause, object: nil, queue: .main) { [weak self] note in
+            self?.pauseDownload(note.object as? String)
+        })
+        observers.append(center.addObserver(forName: backgroundDownloadDiscard, object: nil, queue: .main) { [weak self] note in
+            self?.discardResumeData(note.object as? String)
+        })
         // Reassociate with tasks that the system kept running after process termination.
         _ = session
     }
@@ -75,12 +86,21 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func startDownload(_ payload: String?) {
         guard let payload,
               let data = payload.data(using: .utf8),
-              let request = try? JSONDecoder().decode(BackgroundDownloadRequest.self, from: data),
-              !request.id.isEmpty,
+              let request = try? JSONDecoder().decode(BackgroundDownloadRequest.self, from: data) else {
+            return
+        }
+        guard !request.id.isEmpty,
               !request.fileName.isEmpty,
               request.fileName == (request.fileName as NSString).lastPathComponent,
               let url = URL(string: request.url),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            DispatchQueue.main.async {
+                IosBackgroundDownloadsBridgeKt.iosBackgroundDownloadFailed(id: request.id)
+            }
+            return
+        }
+        if pausingIds.contains(request.id) {
+            startsWaitingForPause[request.id] = payload
             return
         }
         guard pendingStarts.insert(request.id).inserted else { return }
@@ -101,6 +121,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     let destination = directory.appendingPathComponent(request.fileName, isDirectory: false)
                     if let size = try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize,
                        size > 0 {
+                        if let resumeURL = self.resumeDataURL(for: request.fileName) {
+                            try? FileManager.default.removeItem(at: resumeURL)
+                        }
                         IosBackgroundDownloadsBridgeKt.iosBackgroundDownloadFinished(
                             id: request.id, localFileUri: destination.absoluteString, totalBytes: Int64(size)
                         )
@@ -114,13 +137,17 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     urlRequest.setValue(value, forHTTPHeaderField: name)
                 }
                 urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-                let task = self.session.downloadTask(with: urlRequest)
+                let resumeURL = self.resumeDataURL(for: request.fileName)
+                let resumeData = resumeURL.flatMap { try? Data(contentsOf: $0) }
+                let task = resumeData.flatMap { $0.isEmpty ? nil : self.session.downloadTask(withResumeData: $0) }
+                    ?? self.session.downloadTask(with: urlRequest)
                 task.taskDescription = request.id
                 self.records[String(task.taskIdentifier)] = BackgroundDownloadRecord(
                     id: request.id, fileName: request.fileName
                 )
                 self.saveRecords()
                 task.resume()
+                if let resumeURL { try? FileManager.default.removeItem(at: resumeURL) }
             }
         }
     }
@@ -128,6 +155,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func cancelDownload(_ id: String?) {
         guard let id, !id.isEmpty else { return }
         pendingStarts.remove(id)
+        pausingIds.remove(id)
+        startsWaitingForPause.removeValue(forKey: id)
         let matching = records.filter { $0.value.id == id }
         let identifiers = matching.map(\.key)
         identifiers.forEach { records.removeValue(forKey: $0) }
@@ -142,6 +171,71 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
             tasks.filter { $0.taskDescription == id || identifiers.contains(String($0.taskIdentifier)) }
                 .forEach { $0.cancel() }
         }
+    }
+
+    private func pauseDownload(_ id: String?) {
+        guard let id, !id.isEmpty else { return }
+        pendingStarts.remove(id)
+        pausingIds.insert(id)
+        let matching = records.filter { $0.value.id == id }
+        let identifiers = matching.map(\.key)
+        session.getAllTasks { [weak self] tasks in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let active = tasks.filter { identifiers.contains(String($0.taskIdentifier)) || $0.taskDescription == id }
+                if active.isEmpty {
+                    identifiers.forEach { self.records.removeValue(forKey: $0) }
+                    self.saveRecords()
+                    self.finishPause(id)
+                    return
+                }
+                // Remove ownership before cancellation so its completion cannot fail a
+                // newly resumed transfer using the same download ID.
+                active.forEach { self.records.removeValue(forKey: String($0.taskIdentifier)) }
+                self.saveRecords()
+                for task in active {
+                    guard let downloadTask = task as? URLSessionDownloadTask,
+                          let record = matching[String(task.taskIdentifier)] else {
+                        task.cancel()
+                        self.finishPause(id)
+                        continue
+                    }
+                    downloadTask.cancel { [weak self] data in
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            if let data, !data.isEmpty,
+                               !self.discardedFileNames.contains(record.fileName),
+                               let url = self.resumeDataURL(for: record.fileName) {
+                                try? data.write(to: url, options: .atomic)
+                            }
+                            self.finishPause(id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishPause(_ id: String) {
+        guard pausingIds.remove(id) != nil else { return }
+        if let payload = startsWaitingForPause.removeValue(forKey: id) {
+            startDownload(payload)
+        }
+    }
+
+    private func discardResumeData(_ fileName: String?) {
+        guard let fileName,
+              !fileName.isEmpty,
+              fileName == (fileName as NSString).lastPathComponent else { return }
+        discardedFileNames.insert(fileName)
+        if let url = resumeDataURL(for: fileName) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func resumeDataURL(for fileName: String) -> URL? {
+        guard let directory = try? downloadsDirectory() else { return nil }
+        return directory.appendingPathComponent(fileName + ".resume", isDirectory: false)
     }
 
     private func saveRecords() {
@@ -199,6 +293,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 return
             }
             completedFiles[key] = (destination, size)
+            if let resumeURL = resumeDataURL(for: record.fileName) {
+                try? FileManager.default.removeItem(at: resumeURL)
+            }
         } catch {
             // The task completion callback marks this download as failed.
         }
@@ -230,6 +327,8 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let directory = documents.appendingPathComponent("nuvio_downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var excludedDirectory = directory
+        try? excludedDirectory.setResourceValue(true, forKey: .isExcludedFromBackupKey)
         return directory
     }
 

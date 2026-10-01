@@ -210,7 +210,7 @@ object DownloadsRepository {
         val item = _uiState.value.items.firstOrNull { it.id == downloadId } ?: return
         if (item.status != DownloadStatus.Downloading) return
 
-        activeHandles.remove(downloadId)?.cancel()
+        activeHandles.remove(downloadId)?.pause()
         mutateItem(downloadId) { current ->
             current.copy(
                 status = DownloadStatus.Paused,

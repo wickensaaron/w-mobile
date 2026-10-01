@@ -10,6 +10,7 @@ internal data class DownloadPlatformRequest(
 
 internal interface DownloadsTaskHandle {
     fun cancel()
+    fun pause() = cancel()
 }
 
 internal expect object DownloadsPlatformDownloader {
