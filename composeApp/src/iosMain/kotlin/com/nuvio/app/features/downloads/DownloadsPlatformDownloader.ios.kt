@@ -61,19 +61,6 @@ private const val PROGRESS_MIN_INTERVAL_SECONDS = 0.5
 private const val PROGRESS_MIN_BYTE_DELTA = 512L * 1024L
 private const val MAX_VALIDATOR_LENGTH = 256
 
-private val backgroundSessionCompletionHandlers = mutableMapOf<String, () -> Unit>()
-
-fun handleDownloadsBackgroundEvents(
-    identifier: String,
-    completionHandler: () -> Unit,
-) {
-    backgroundSessionCompletionHandlers[identifier] = completionHandler
-}
-
-fun pauseDownloadsForAppBackground() {
-    DownloadsRepository.pauseActiveDownloads()
-}
-
 @OptIn(ExperimentalForeignApi::class)
 internal actual object DownloadsPlatformDownloader {
     actual fun start(
@@ -82,99 +69,15 @@ internal actual object DownloadsPlatformDownloader {
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: () -> Unit,
-    ): DownloadsTaskHandle {
-        val job = SupervisorJob()
-        val scope = CoroutineScope(job + Dispatchers.Default)
-        val handle = IosDownloadsTaskHandle(job)
-
-        scope.launch {
-            val downloadsDirectory = downloadsDirectoryPath()
-            val destinationPath = "$downloadsDirectory/${request.destinationFileName}"
-            val tempPath = "$downloadsDirectory/${request.destinationFileName}.part"
-            var movedForThisAttempt = false
-
-            try {
-                DownloadSubtitles.prepare(request.item, NSURL.fileURLWithPath(destinationPath).absoluteString!!)
-                var resumeFromBytes = fileSizeOrNull(tempPath)?.coerceAtLeast(0L) ?: 0L
-                val resumeValidator = if (resumeFromBytes > 0L) readResumeValidator(tempPath) else null
-                if (resumeFromBytes > 0L && resumeValidator == null) {
-                    check(removePathIfExists(tempPath) && removePathIfExists("$tempPath.validator"))
-                    resumeFromBytes = 0L
-                }
-
-                val attemptedRangeRequest = resumeFromBytes > 0L
-                var result = performDownloadRequest(
-                    request = request,
-                    rangeStart = if (attemptedRangeRequest) resumeFromBytes else null,
-                    resumeValidator = resumeValidator,
-                    resumeFromBytes = resumeFromBytes,
-                    tempPath = tempPath,
-                    handle = handle,
-                    onProgress = { downloadedBytes, totalBytes ->
-                        scope.launch(Dispatchers.Main) { onProgress(downloadedBytes, totalBytes) }
-                    },
-                )
-
-                if (attemptedRangeRequest && result.statusCode == 416) {
-                    check(removePathIfExists(tempPath) && removePathIfExists("$tempPath.validator"))
-                    result = performDownloadRequest(
-                        request = request,
-                        rangeStart = null,
-                        resumeValidator = null,
-                        resumeFromBytes = 0L,
-                        tempPath = tempPath,
-                        handle = handle,
-                        onProgress = { downloadedBytes, totalBytes ->
-                            scope.launch(Dispatchers.Main) { onProgress(downloadedBytes, totalBytes) }
-                        },
-                    )
-                }
-
-                if (result.statusCode != 200 && result.statusCode != 206) {
-                    error(runBlocking { getString(Res.string.network_request_failed_http, result.statusCode) })
-                }
-                job.ensureActive()
-                val finalPartialSize = fileSizeOrNull(tempPath)
-                if (finalPartialSize == null || finalPartialSize <= 0L ||
-                    (result.expectedTotalBytes != null && finalPartialSize != result.expectedTotalBytes)
-                ) error("Incomplete download")
-                check(removePathIfExists("$tempPath.validator"))
-                if (!removePathIfExists(destinationPath)) error("Could not replace existing download")
-                val moved = NSFileManager.defaultManager.moveItemAtPath(
-                    srcPath = tempPath,
-                    toPath = destinationPath,
-                    error = null,
-                )
-                if (!moved) {
-                    error(runBlocking { getString(Res.string.downloads_error_finalize_file_failed) })
-                }
-                movedForThisAttempt = true
-                job.ensureActive()
-                val localFileUri = NSURL.fileURLWithPath(destinationPath).absoluteString ?: "file://$destinationPath"
-                val finalSize = fileSizeOrNull(destinationPath)
-                withContext(Dispatchers.Main) {
-                    onSuccess(localFileUri, result.expectedTotalBytes ?: finalSize)
-                }
-            } catch (_: CancellationException) {
-                handle.cancelNativeTask()
-                if (movedForThisAttempt) removePathIfExists(destinationPath)
-            } catch (_: Throwable) {
-                // Platform and subtitle failures can contain provider URLs or local paths.
-                withContext(Dispatchers.Main) {
-                    onFailure(getString(Res.string.download_failed))
-                }
-            }
-        }
-
-        return handle
-    }
+    ): DownloadsTaskHandle = IosBackgroundDownloadsBridge.start(
+        request = request,
+        onProgress = onProgress,
+        onSuccess = onSuccess,
+        onFailure = onFailure,
+    )
 
     actual fun restoreItem(item: DownloadItem): DownloadItem =
-        if (item.status == DownloadStatus.Downloading) {
-            item.copy(status = DownloadStatus.Paused, errorMessage = null)
-        } else {
-            item
-        }
+        IosBackgroundDownloadsBridge.restore(item)
 
     actual fun removeFile(localFileUri: String?): Boolean {
         if (localFileUri.isNullOrBlank()) return false
@@ -459,11 +362,6 @@ private class IosDownloadDelegate(
         val finished = result
         if (finished == null) completion.completeExceptionally(IllegalStateException("Missing download response"))
         else completion.complete(finished)
-    }
-
-    override fun URLSessionDidFinishEventsForBackgroundURLSession(session: NSURLSession) {
-        val identifier = session.configuration.identifier ?: return
-        backgroundSessionCompletionHandlers.remove(identifier)?.invoke()
     }
 
     private fun closeOutputFile() {
