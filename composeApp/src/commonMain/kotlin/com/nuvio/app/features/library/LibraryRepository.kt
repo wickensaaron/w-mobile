@@ -126,6 +126,9 @@ object LibraryRepository {
         }
     }
 
+    internal fun isLoadedForProfile(profileId: Int): Boolean = localState.snapshot().let {
+        ProfileRepository.activeProfileId == profileId && it.hasLoaded && it.token.profileId == profileId && it.token.syncIdentity == currentNuvioSyncIdentity()
+    }
     fun ensureLoaded() {
         ensureTrackingProvidersRegistered()
         TrackingProviderRegistry.ensureLoaded()

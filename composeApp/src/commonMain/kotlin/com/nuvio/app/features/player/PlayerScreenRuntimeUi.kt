@@ -7,12 +7,18 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.p2p.formatP2pMegabytes
@@ -234,6 +240,31 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             p2pRebufferProgress = p2pRebufferProgress,
         )
         RenderPlayerModals(displayedPositionMs = displayedPositionMs)
+        if (args.onReturnToLive != null && controlsVisible && !playerControlsLocked) {
+            Button(
+                onClick = {
+                    flushWatchProgress()
+                    args.onReturnToLive?.invoke()
+                },
+                modifier = Modifier.align(Alignment.BottomStart)
+                    .padding(start = horizontalSafePadding + 16.dp, bottom = overlayBottomPadding + 88.dp)
+                    .heightIn(min = 48.dp),
+            ) { Text("Return to live") }
+        }
+        val recordingStart = recordingStartSkipTargetMs(
+            args.recordingProgrammeStartOffsetMs, playbackSnapshot.positionMs, playbackSnapshot.durationMs,
+        )
+        if (recordingStart != null && controlsVisible && !playerControlsLocked && errorMessage == null) {
+            Button(
+                onClick = {
+                    playerController?.seekTo(recordingStart)
+                    scheduleProgressSyncAfterSeek()
+                },
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .padding(end = horizontalSafePadding + 16.dp, bottom = overlayBottomPadding + 88.dp)
+                    .heightIn(min = 48.dp),
+            ) { Text("Skip to programme start") }
+        }
     }
 }
 
@@ -315,9 +346,9 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
             } else {
                 null
             },
-            onSourcesClick = if (activeVideoId != null) { { openSourcesPanel() } } else null,
+            onSourcesClick = if (activeVideoId != null && !isManagedLiveTvPlayback(activeProviderAddonId)) { { openSourcesPanel() } } else null,
             onEpisodesClick = if (isSeries) { { openEpisodesPanel() } } else null,
-            onOpenInExternalPlayer = args.onOpenInExternalPlayer?.takeUnless { activeProviderAddonId?.startsWith("wcore:") == true }?.let { openExternal ->
+            onOpenInExternalPlayer = args.onOpenInExternalPlayer?.takeUnless { activeProviderAddonId?.startsWith("wcore:") == true || isManagedLiveTvPlayback(activeProviderAddonId) }?.let { openExternal ->
                 externalPlayback@{
                     if (activeCoreSelectionReference != null || activeProviderAddonId?.startsWith("wcore:") == true) return@externalPlayback
                     val loadedSubtitles = addonSubtitles

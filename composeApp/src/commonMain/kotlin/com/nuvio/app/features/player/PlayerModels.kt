@@ -45,7 +45,9 @@ data class PlayerLaunch(
     val torrentTrackers: List<String> = emptyList(),
     val initialPositionMs: Long = 0L,
     val initialProgressFraction: Float? = null,
+    val recordingProgrammeStartOffsetMs: Long? = null,
     val contentLanguage: String? = null,
+    val requireEnglishAudio: Boolean = false,
     val coreSelectionReference: String? = null,
 )
 

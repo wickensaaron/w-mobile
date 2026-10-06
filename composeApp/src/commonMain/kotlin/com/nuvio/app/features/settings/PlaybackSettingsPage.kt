@@ -781,7 +781,8 @@ private fun PlaybackSettingsSection(
             SettingsGroup(isTablet = isTablet) {
                 SettingsNavigationRow(
                     title = stringResource(Res.string.settings_playback_stream_selection_mode),
-                    description = stringResource(autoPlayPlayerSettings.streamAutoPlayMode.labelRes),
+                    description = stringResource(autoPlayPlayerSettings.streamAutoPlayMode.labelRes) +
+                        if (com.nuvio.app.features.streams.balancedAutoPlayEnabled) " · English audio required · up to 20 GB" else "",
                     isTablet = isTablet,
                     onClick = { showAutoPlayModeDialog = true },
                 )

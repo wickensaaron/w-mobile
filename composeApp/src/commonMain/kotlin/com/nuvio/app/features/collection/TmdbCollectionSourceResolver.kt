@@ -139,6 +139,23 @@ object TmdbCollectionSourceResolver {
         )?.results.orEmpty()
     }
 
+    suspend fun searchMovies(query: String, year: Int? = null): List<MetaPreview> = withContext(Dispatchers.Default) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) return@withContext emptyList()
+        val settings = TmdbSettingsRepository.snapshot()
+        val apiKey = TmdbSettingsRepository.effectiveApiKey()
+        val language = normalizeTmdbLanguage(settings.language)
+        fetch<TmdbDiscoverResponse>(
+            endpoint = "search/movie",
+            apiKey = apiKey,
+            query = buildMap {
+                put("query", trimmed)
+                put("language", language)
+                year?.let { put("year", it.toString()) }
+            },
+        )?.results.orEmpty().mapNotNull { it.toPreview(TmdbCollectionMediaType.MOVIE) }
+    }
+
     suspend fun searchKeywords(query: String): Map<Int, String> = withContext(Dispatchers.Default) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyMap()

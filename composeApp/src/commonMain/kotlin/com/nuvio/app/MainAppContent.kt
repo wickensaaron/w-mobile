@@ -1,5 +1,15 @@
 package com.nuvio.app
 
+import com.nuvio.app.features.livetv.*
+
+import com.nuvio.app.features.streaming.StreamingService
+import com.nuvio.app.features.streaming.StreamingServiceScreen
+import com.nuvio.app.features.franchise.FilmFranchiseScreen
+import com.nuvio.app.features.franchise.FilmCollectionsBrowseScreen
+import com.nuvio.app.navigation.FilmFranchiseRoute
+import com.nuvio.app.navigation.FilmCollectionsBrowseRoute
+import com.nuvio.app.navigation.StreamingServiceRoute
+
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.MutableTransitionState
@@ -1132,7 +1142,17 @@ internal fun MainAppContent(
             )
         }
 
+        fun launchOwnedCatchup(request: LiveTvCatchupRequest, resumePositionMs: Long = 0): Boolean {
+            val playback = LiveTvRepository.resolveCatchupPlayback(activePlaybackProfileId, request) ?: return false
+            val launchId = PlayerLaunchStore.put(buildLiveTvCatchupPlayerLaunch(activePlaybackProfileId, playback, resumePositionMs))
+            LiveTvCatchupPlaybackRegistry.register(launchId, request)
+            navController.navigate(PlayerRoute(launchId = launchId, title = playback.title))
+            return true
+        }
+
         fun canPlayContinueWatching(item: ContinueWatchingItem): Boolean =
+            (item.parentMetaType == "recording" && item.videoId.startsWith("recording:")) ||
+            (item.parentMetaType == "catchup" && parseLiveTvCatchupHistoryId(item.videoId) != null) ||
             !item.isUnsupportedMobileLiveTvProgress() && (
                 item.isCloudLibraryContinueWatchingItem() || playbackAvailability.canPlay(
                     type = item.parentMetaType,
@@ -1144,12 +1164,33 @@ internal fun MainAppContent(
             )
 
         fun canSelectContinueWatchingStreams(item: ContinueWatchingItem): Boolean =
-            !item.isUnsupportedMobileLiveTvProgress() && !item.isCloudLibraryContinueWatchingItem() &&
+            item.parentMetaType != "recording" && !item.isUnsupportedMobileLiveTvProgress() && !item.isCloudLibraryContinueWatchingItem() &&
                 playbackAvailability.canStream(item.parentMetaType, item.videoId)
 
         val openContinueWatching: (ContinueWatchingItem, Boolean, Boolean) -> Unit = { item, manualSelection, startFromBeginning ->
             resumePromptItem = null
-            if (item.isUnsupportedMobileLiveTvProgress()) {
+            if (item.parentMetaType == "recording") {
+                coroutineScope.launch {
+                    try {
+                        val launch = resumeRecordingPlayerLaunch(item.videoId, activePlaybackProfileId,
+                            if (startFromBeginning) 0 else item.resumePositionMs)
+                        if (launch != null && isCurrentRecordingPlaybackRequest(launch)) {
+                            navController.navigate(PlayerRoute(launchId = PlayerLaunchStore.put(launch), title = launch.title))
+                        } else NuvioToastController.show("This recording is no longer available.")
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        NuvioToastController.show("Could not open this recording. Try again from Recordings.")
+                    }
+                }
+            } else if (item.parentMetaType == "catchup") {
+                coroutineScope.launch {
+                    val playback = LiveTvRepository.resolveCatchupHistoryPlayback(activePlaybackProfileId, item.videoId)
+                    if (playback == null || !launchOwnedCatchup(playback.request, if (startFromBeginning) 0 else item.resumePositionMs)) {
+                        NuvioToastController.show("This programme is no longer available. Open Catch-up from the guide.")
+                    }
+                }
+            } else if (item.isUnsupportedMobileLiveTvProgress()) {
                 NuvioToastController.show(playbackUnavailableMessage)
             } else if (item.isCloudLibraryContinueWatchingItem()) {
                 coroutineScope.launch {
@@ -1247,6 +1288,21 @@ internal fun MainAppContent(
                 val zoomAnchor = PosterZoomAnchorHolder.consume()
                 selectedContinueWatchingZoomAnchor = zoomAnchor
                 selectedContinueWatchingForActions = item
+            }
+        }
+
+        LaunchedEffect(activePlaybackProfileId, navController) {
+            LiveTvRepository.catchupRequests.collect { (request, shouldResume) ->
+                val playback = LiveTvRepository.resolveCatchupPlayback(activePlaybackProfileId, request)
+                val resume = if (shouldResume) playback?.historyId?.let { WatchProgressRepository.progressForVideo(it)?.lastPositionMs } ?: 0L else 0L
+                if (!launchOwnedCatchup(request, resume)) NuvioToastController.show("Catch-up is no longer available. Choose the channel again.")
+            }
+        }
+        LaunchedEffect(activePlaybackProfileId, navController) {
+            LiveTvRecordingPlaybackRequests.requests.collect { launch ->
+                if (!isCurrentRecordingPlaybackRequest(launch)) return@collect
+                val launchId = PlayerLaunchStore.put(launch)
+                navController.navigate(PlayerRoute(launchId = launchId, title = launch.title))
             }
         }
 
@@ -1481,6 +1537,9 @@ internal fun MainAppContent(
                                         )
                                     )
                                 },
+                                onStreamingServiceClick = { service -> navController.navigate(StreamingServiceRoute(service.apiId)) },
+                                onFilmFranchiseClick = { id, name -> navController.navigate(FilmFranchiseRoute(id, name)) },
+                                onFilmCollectionsBrowseClick = { navController.navigate(FilmCollectionsBrowseRoute) },
                                 onRequestedSettingsPageConsumed = {
                                     requestedSettingsPageName = null
                                 },
@@ -1499,12 +1558,52 @@ internal fun MainAppContent(
                             if (profile.profileIndex != ProfileRepository.state.value.activeProfile?.profileIndex) {
                                 profileSwitchLoading = true
                                 NativeTabBridge.publishTabBarVisible(false)
-                                activateTab(AppScreenTab.Home)
-                                ProfileRepository.selectProfile(profile.profileIndex)
-                                SyncManager.pullAllForProfile(profile.profileIndex)
+                                coroutineScope.launch {
+                                    try {
+                                        if (ProfileRepository.switchToProfile(profile.profileIndex)) {
+                                            activateTab(AppScreenTab.Home)
+                                            SyncManager.pullAllForProfile(profile.profileIndex)
+                                        }
+                                    } finally {
+                                        profileSwitchLoading = false
+                                    }
+                                }
                             }
                         },
                         onAddProfileRequested = onSwitchProfile,
+                    )
+                }
+                entry<StreamingServiceRoute> { route ->
+                    val service = StreamingService.fromId(route.serviceId)
+                    if (service != null) {
+                        StreamingServiceScreen(
+                            service = service,
+                            onBack = { navController.popBackStack() },
+                            onFranchiseClick = { id, name ->
+                                navController.navigate(FilmFranchiseRoute(id, name))
+                            },
+                            onPosterClick = { meta ->
+                                navController.navigate(
+                                    DetailRoute(type = meta.type, id = meta.id, title = meta.name),
+                                )
+                            },
+                        )
+                    } else {
+                        LaunchedEffect(route) { navController.popBackStack() }
+                    }
+                }
+                entry<FilmFranchiseRoute> { route ->
+                    FilmFranchiseScreen(
+                        collectionId = route.collectionId,
+                        fallbackName = route.title,
+                        onBack = { navController.popBackStack() },
+                        onFilmClick = rememberOpenMeta(navController),
+                    )
+                }
+                entry<FilmCollectionsBrowseRoute> {
+                    FilmCollectionsBrowseScreen(
+                        onBack = { navController.popBackStack() },
+                        onCollectionClick = { id, name -> navController.navigate(FilmFranchiseRoute(id, name)) },
                     )
                 }
                 entry<DetailRoute> { route ->

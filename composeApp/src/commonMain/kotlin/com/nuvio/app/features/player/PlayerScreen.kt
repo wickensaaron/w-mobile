@@ -40,8 +40,11 @@ fun PlayerScreen(
     torrentTrackers: List<String> = emptyList(),
     initialPositionMs: Long = 0L,
     initialProgressFraction: Float? = null,
+    recordingProgrammeStartOffsetMs: Long? = null,
     contentLanguage: String? = null,
+    requireEnglishAudio: Boolean = false,
     coreSelectionReference: String? = null,
+    onReturnToLive: (() -> Unit)? = null,
 ) {
     PlayerScreenContent(
         PlayerScreenArgs(
@@ -80,8 +83,11 @@ fun PlayerScreen(
             torrentTrackers = torrentTrackers,
             initialPositionMs = initialPositionMs,
             initialProgressFraction = initialProgressFraction,
+            recordingProgrammeStartOffsetMs = recordingProgrammeStartOffsetMs,
             contentLanguage = contentLanguage,
+            requireEnglishAudio = requireEnglishAudio,
             coreSelectionReference = coreSelectionReference,
+            onReturnToLive = onReturnToLive,
         )
     )
 }

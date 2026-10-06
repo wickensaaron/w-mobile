@@ -47,6 +47,7 @@ object StreamAutoPlaySelector {
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
         preferredAudioLanguage: String? = null,
+        balancedSelection: Boolean = balancedAutoPlayEnabled,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -62,6 +63,7 @@ object StreamAutoPlaySelector {
             debridEnabled = debridEnabled,
             activeResolverProviderId = activeResolverProviderId,
             preferredAudioLanguage = preferredAudioLanguage,
+            balancedSelection = balancedSelection,
         ).stream
 
     fun evaluateAutoPlayStream(
@@ -78,6 +80,7 @@ object StreamAutoPlaySelector {
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
         preferredAudioLanguage: String? = null,
+        balancedSelection: Boolean = balancedAutoPlayEnabled,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -89,6 +92,7 @@ object StreamAutoPlaySelector {
             }
         }
         val candidateStreams = sourceScopedStreams.filter { stream ->
+            if (balancedSelection && !BalancedAutoPlayPolicy.isEligible(stream)) return@filter false
             val isAddonStream = stream.addonName in installedAddonNames
             if (stream.addonId.startsWith("$W_CORE_ADDON_ID:")) {
                 true
@@ -113,10 +117,13 @@ object StreamAutoPlaySelector {
             stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
         }
         val preferredReadyStream = if (mode == StreamAutoPlayMode.SMART)
-            smartOrder(readyBingeGroupCandidates, preferredAudioLanguage).firstOrNull()
+            smartOrder(readyBingeGroupCandidates, preferredAudioLanguage, balancedSelection).firstOrNull()
         else readyBingeGroupCandidates.firstOrNull()
         if (bingeGroupOnly) {
-            val readyStreams = preferredReadyStream?.let(::listOf).orEmpty()
+            val readyStreams = if (balancedSelection) {
+                if (mode == StreamAutoPlayMode.SMART) smartOrder(readyBingeGroupCandidates, preferredAudioLanguage, true)
+                else readyBingeGroupCandidates
+            } else preferredReadyStream?.let(::listOf).orEmpty()
             return StreamAutoPlayEvaluation(
                 stream = preferredReadyStream,
                 readyStreams = readyStreams,
@@ -134,7 +141,7 @@ object StreamAutoPlaySelector {
                 stream.behaviorHints.bingeGroup == targetBingeGroup &&
                     stream.isAutoPlayable(debridEnabled, activeResolverProviderId)
             }
-            if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage).firstOrNull()
+            if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage, balancedSelection).firstOrNull()
             else ready.firstOrNull()
         } else {
             null
@@ -192,7 +199,7 @@ object StreamAutoPlaySelector {
             matchingStreams
                 .filter { it.isAutoPlayable(debridEnabled, activeResolverProviderId) }
                 .filterNot { it == preferredStream }
-                .let { ready -> if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage) else ready }
+                .let { ready -> if (mode == StreamAutoPlayMode.SMART) smartOrder(ready, preferredAudioLanguage, balancedSelection) else ready }
                 .forEach(::add)
         }
         val selected = readyStreams.firstOrNull()
@@ -247,8 +254,9 @@ object StreamAutoPlaySelector {
     }
 
     /** Stable ranking from metadata the addon already supplied. Unknown fields stay neutral. */
-    private fun smartOrder(streams: List<StreamItem>, preferredAudioLanguage: String?): List<StreamItem> = streams.withIndex()
-        .sortedWith(compareByDescending<IndexedValue<StreamItem>> { smartScore(it.value, preferredAudioLanguage) }
+    private fun smartOrder(streams: List<StreamItem>, preferredAudioLanguage: String?, balanced: Boolean): List<StreamItem> = streams.withIndex()
+        .sortedWith(compareByDescending<IndexedValue<StreamItem>> { if (balanced) BalancedAutoPlayPolicy.sizeRank(it.value) else 0 }
+            .thenByDescending { smartScore(it.value, if (balanced) "en" else preferredAudioLanguage) }
             .thenBy { it.index })
         .map { it.value }
 

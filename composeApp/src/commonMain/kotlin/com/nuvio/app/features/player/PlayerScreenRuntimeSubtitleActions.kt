@@ -6,6 +6,7 @@ import com.nuvio.app.features.addons.httpGetTextWithHeaders
 import kotlinx.coroutines.launch
 
 internal fun PlayerScreenRuntime.fetchAddonSubtitlesForActiveItem() {
+    if (isManagedLiveTvPlayback(activeProviderAddonId)) return
     if (activeSourceUrl.startsWith("file:") && externalSubtitles.isNotEmpty()) {
         SubtitleRepository.clear()
         return

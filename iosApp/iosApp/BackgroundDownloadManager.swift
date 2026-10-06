@@ -328,7 +328,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         let directory = documents.appendingPathComponent("nuvio_downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var excludedDirectory = directory
-        try? excludedDirectory.setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        var resourceValues = URLResourceValues()
+        resourceValues.isExcludedFromBackup = true
+        try? excludedDirectory.setResourceValues(resourceValues)
         return directory
     }
 

@@ -76,6 +76,11 @@ internal fun PlayerScreenRuntime.tryRefreshCoreSourceAfterError(message: String?
             controlsVisible = !playerControlsLocked
             return@launch
         }
+        if (requireEnglishAudio && !com.nuvio.app.features.streams.verifyBalancedAutoPlay(refreshed)) {
+            if (isCurrent()) errorMessage = com.nuvio.app.features.streams.BalancedAutoPlayPolicy.FALLBACK_MESSAGE
+            return@launch
+        }
+        if (!isCurrent()) return@launch
         // Keep the current play/pause preference; only the exact source credentials change.
         flushWatchProgress()
         installCoreRecovery(refreshed, savedPosition)

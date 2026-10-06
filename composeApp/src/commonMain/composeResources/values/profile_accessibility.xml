@@ -1,0 +1,4 @@
+<resources>
+    <string name="profile_pin_digits_entered">%1$d of 4 digits entered</string>
+    <string name="profile_pin_verifying">Checking PIN…</string>
+</resources>

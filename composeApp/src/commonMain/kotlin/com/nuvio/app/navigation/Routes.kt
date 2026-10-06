@@ -155,3 +155,19 @@ data class PlayerRoute(
     override val hidesNavigationBar: Boolean
         get() = true
 }
+
+@Serializable
+data class StreamingServiceRoute(val serviceId: String) : AppRoute {
+    override val hidesNavigationBar: Boolean get() = true
+}
+
+@Serializable
+data class FilmFranchiseRoute(val collectionId: Int, override val title: String) : AppRoute {
+    override val hidesNavigationBar: Boolean get() = true
+}
+
+@Serializable
+data object FilmCollectionsBrowseRoute : AppRoute {
+    override val title: String get() = "Film Collections"
+    override val hidesNavigationBar: Boolean get() = true
+}

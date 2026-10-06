@@ -103,6 +103,7 @@ fun LibraryScreen(
     onOpenDownloads: (() -> Unit)? = null,
     onCloudFilePlay: ((CloudLibraryItem, CloudLibraryFile) -> Unit)? = null,
     onConnectCloudClick: (() -> Unit)? = null,
+    onPlayRecording: ((com.nuvio.app.features.livetv.LiveTvRecording, String) -> Unit)? = null,
     disintegrationRequest: DisintegrationRequest<String>? = null,
 ) {
     val uiState by remember {
@@ -383,6 +384,9 @@ fun LibraryScreen(
                     onConnectCloudClick = onConnectCloudClick,
                 )
             } else {
+                item(key = "library-recordings-row") {
+                    LibraryRecordingsRow(ProfileRepository.activeProfileId, onPlayRecording)
+                }
                 when {
                     !uiState.isLoaded || (uiState.isLoading && uiState.sections.isEmpty()) -> {
                         if (displaySettings.layoutMode == LibraryLayoutMode.VERTICAL) {

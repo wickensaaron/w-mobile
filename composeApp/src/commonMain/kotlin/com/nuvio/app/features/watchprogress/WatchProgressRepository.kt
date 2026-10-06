@@ -288,6 +288,8 @@ object WatchProgressRepository {
 
     }
 
+    internal fun isLoadedForProfile(profileId: Int): Boolean =
+        ProfileRepository.activeProfileId == profileId && hasLoaded && currentProfileId == profileId && loadedSyncIdentity == currentNuvioSyncIdentity()
     fun ensureLoaded() {
         ensureTrackingProvidersRegistered()
         TrackingProviderRegistry.ensureLoaded()

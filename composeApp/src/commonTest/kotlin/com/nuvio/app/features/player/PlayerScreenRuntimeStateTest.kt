@@ -14,6 +14,22 @@ import kotlin.test.assertTrue
 class PlayerScreenRuntimeStateTest {
 
     @Test
+    fun verifiedAutoPlayOverridesForeignAudioPreferences() {
+        val runtime = PlayerScreenRuntime(testPlayerScreenArgs().copy(requireEnglishAudio = true))
+        runtime.playerSettingsUiState = PlayerSettingsUiState(preferredAudioLanguage = "fr",
+            secondaryPreferredAudioLanguage = "de")
+        assertEquals(listOf("en", "eng"), runtime.preferredAudioLanguageTargets)
+    }
+
+    @Test
+    fun verifiedAutoPlayDoesNotRestoreForeignSavedAudio() {
+        val runtime = PlayerScreenRuntime(testPlayerScreenArgs().copy(requireEnglishAudio = true))
+        runtime.audioTracks = listOf(AudioTrack(0, "1", "French", "fr"), AudioTrack(1, "2", "English", "eng"))
+        runtime.restorePersistedAudioPreference(PersistedPlayerTrackPreference(audioTrackId = "1", audioLanguage = "fr"))
+        assertFalse(runtime.isUserExplicitAudioSelection)
+    }
+
+    @Test
     fun controlsStartHidden() {
         assertFalse(PlayerScreenRuntime(testPlayerScreenArgs()).controlsVisible)
     }

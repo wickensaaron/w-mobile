@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -109,6 +111,7 @@ object LiveTvRepository {
         channelRefreshJob?.cancel()
         guideRefreshJob?.cancel()
         playbackPreparationJob?.cancel()
+        LiveTvCatchupPlaybackRegistry.clear()
         importedSources = emptyList()
         ++accountSourceGeneration
         loadedAccountScope = owner
@@ -293,6 +296,84 @@ object LiveTvRepository {
                     accountGuideSyncMessage = "This favourite could not be saved. Refresh choices, then try again.")
             }
         }
+    }
+
+    internal val catchupRequests = MutableSharedFlow<Pair<LiveTvCatchupRequest, Boolean>>(extraBufferCapacity = 1)
+
+    internal fun requestCatchup(request: LiveTvCatchupRequest, resume: Boolean = false) {
+        if (resolveCatchupPlayback(ProfileRepository.activeProfileId, request) != null) catchupRequests.tryEmit(request to resume)
+    }
+
+    private fun catchupOwner(): LiveTvCatchupOwner? {
+        if (loadedProfileId != ProfileRepository.activeProfileId || loadedAccountScope != currentLiveTvAccountScope() ||
+            loadedConfiguration != ServerConfigurationRepository.active.value) return null
+        val profile = ProfileRepository.state.value.activeProfile ?: return null
+        return LiveTvCatchupOwner(profile.userId, profile.profileIndex,
+            ServerConfigurationRepository.active.value.backendUrl.trim().trimEnd('/'), loadedAccountScope == null)
+    }
+
+    internal fun catchupSelection(channel: LiveTvChannel): LiveTvCatchupSelection? {
+        if (!isCurrentPlaybackRequest(channel)) return null
+        val owner = catchupOwner() ?: return null
+        val archive = channel.archive ?: return null
+        val source = if (channel.accountScope != null) {
+            val imported = importedSources.singleOrNull { it.id == channel.playlistId && it.enabled && it.type == "XTREAM" } ?: return null
+            MobileLiveTvArchiveSource(imported.id, imported.id, imported.name, imported.endpoint,
+                imported.username, imported.password, imported.epgUrl)
+        } else {
+            val settings = _uiState.value.xtreamSettings
+            if (channel.playlistId != "provider:xtream" || !settings.isConfigured || !settings.isEnabled) return null
+            MobileLiveTvArchiveSource("xtream", "local-xtream", "Xtream", settings.serverUrl, settings.username, settings.password)
+        }
+        if (!channel.id.startsWith("${source.id}:") || !Regex("[0-9]{1,20}").matches(channel.id.removePrefix("${source.id}:"))) return null
+        return LiveTvCatchupSelection(owner, source, channel, archive)
+    }
+
+    internal fun ownsCatchup(selection: LiveTvCatchupSelection): Boolean {
+        val current = catchupSelection(selection.channel) ?: return false
+        return current.owner == selection.owner && current.source == selection.source && current.archive == selection.archive
+    }
+
+    internal fun resolveCatchupPlayback(profileId: Int, request: LiveTvCatchupRequest): LiveTvCatchupPlayback? {
+        if (profileId != ProfileRepository.activeProfileId) return null
+        val clock = LiveTvArchivePlatform.clock ?: return null
+        val url = resolveLiveTvXtreamCatchupUrl(request, clock, Clock.System.now().toEpochMilliseconds()) ?: return null
+        return LiveTvCatchupPlayback(request, url, liveTvCatchupHistoryId(request))
+    }
+
+    internal fun catchupHistorySelection(profileId: Int, videoId: String): LiveTvCatchupSelection? {
+        if (profileId != ProfileRepository.activeProfileId) return null
+        val identity = parseLiveTvCatchupHistoryId(videoId) ?: return null
+        val channelId = "${if (identity.sourceId == "local-xtream") "xtream" else identity.sourceId}:${identity.streamId}"
+        val channel = _uiState.value.channels.singleOrNull { it.id == channelId } ?: return null
+        return catchupSelection(channel)?.takeIf { liveTvCatchupFingerprint(it) == identity.fingerprint }
+    }
+
+    internal suspend fun resolveCatchupHistoryPlayback(profileId: Int, videoId: String): LiveTvCatchupPlayback? {
+        val identity = parseLiveTvCatchupHistoryId(videoId) ?: return null
+        ensureLoaded()
+        if (profileId != ProfileRepository.activeProfileId) return null
+        if (catchupHistorySelection(profileId, videoId) == null && (catalogueNeedsRefresh || _uiState.value.isRestoringAccountSources)) {
+            val wasForeground = liveTvForeground
+            try {
+                enterLiveTv()
+                withTimeoutOrNull(20_000) {
+                    uiState.first { !it.isRestoringAccountSources && !it.isLoading && !catalogueNeedsRefresh }
+                } ?: return null
+            } finally {
+                if (!wasForeground) leaveLiveTv()
+            }
+        }
+        val selection = catchupHistorySelection(profileId, videoId) ?: return null
+        val clock = LiveTvArchivePlatform.clock ?: return null
+        val loader = LiveTvCatchupLoader(clock)
+        val zone = loader.timezone(selection) { ownsCatchup(selection) }.zone ?: return null
+        val now = Clock.System.now().toEpochMilliseconds()
+        val day = clock.localTimestamp(identity.startMs, zone).take(10)
+        val history = loader.history(selection, zone, day, now) { ownsCatchup(selection) }
+        val programme = history.programmes.singleOrNull { it.startMs == identity.startMs && it.endMs == identity.endMs } ?: return null
+        val request = LiveTvCatchupRequest.fromHistory(history, programme, now) ?: return null
+        return resolveCatchupPlayback(profileId, request)?.takeIf { it.historyId == videoId }
     }
 
     fun isCurrentPlaybackRequest(channel: LiveTvChannel): Boolean {

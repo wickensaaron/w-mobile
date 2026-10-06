@@ -11,7 +11,7 @@ internal val PlayerScreenRuntime.contentLanguage: String?
     }
 
 internal val PlayerScreenRuntime.preferredAudioLanguageTargets: List<String>
-    get() = resolvePreferredAudioLanguageTargets(
+    get() = if (requireEnglishAudio) listOf("en", "eng") else resolvePreferredAudioLanguageTargets(
         preferredAudioLanguage = playerSettingsUiState.preferredAudioLanguage,
         secondaryPreferredAudioLanguage = playerSettingsUiState.secondaryPreferredAudioLanguage,
         deviceLanguages = DeviceLanguagePreferences.preferredLanguageCodes(),
@@ -42,6 +42,7 @@ internal fun PlayerScreenRuntime.applyPreferredAudioTrack(targets: List<String>)
 }
 
 internal fun PlayerScreenRuntime.restorePersistedAudioPreference(preference: PersistedPlayerTrackPreference) {
+    if (requireEnglishAudio) return
     if (audioTracks.isEmpty()) return
     val restoredIndex = findPersistedAudioTrackIndex(audioTracks, preference)
     if (restoredIndex < 0) return

@@ -13,6 +13,7 @@ import com.nuvio.app.features.details.TmdbEntityBrowseScreen
 import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.tmdb.TmdbEntityKind
 import com.nuvio.app.features.tmdb.TmdbService
+import com.nuvio.app.navigation.FilmFranchiseRoute
 import com.nuvio.app.navigation.DetailRoute
 import com.nuvio.app.navigation.EntityBrowseRoute
 import com.nuvio.app.navigation.NuvioNavigator
@@ -42,7 +43,7 @@ internal typealias ContentPlayAction = (
 ) -> Unit
 
 @Composable
-private fun rememberOpenMeta(navController: NuvioNavigator): (MetaPreview) -> Unit {
+internal fun rememberOpenMeta(navController: NuvioNavigator): (MetaPreview) -> Unit {
     val scope = rememberCoroutineScope()
     return { preview ->
         scope.launch {
@@ -92,6 +93,7 @@ internal fun DetailsDestination(
         onPlayManually = onPlayManually,
         onDownload = onDownload,
         onOpenMeta = onOpenMeta,
+        onOpenCollection = { id, name -> navController.navigate(FilmFranchiseRoute(id, name)) },
         onCastClick = { person, avatarTransitionKey ->
             val tmdbId = person.tmdbId
             if (tmdbId != null && tmdbId > 0) {

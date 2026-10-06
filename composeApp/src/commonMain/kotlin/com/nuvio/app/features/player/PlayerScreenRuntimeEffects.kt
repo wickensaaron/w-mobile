@@ -67,6 +67,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     }
 
     LaunchedEffect(parentMetaType, parentMetaId) {
+        if (isManagedLiveTvPlayback(providerAddonId)) return@LaunchedEffect
         playerMeta = MetaDetailsRepository.peek(parentMetaType, parentMetaId)
         playerMetaVideos = playerMeta?.videos.orEmpty()
         if (playerMetaVideos.isEmpty()) {
@@ -78,6 +79,7 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
     }
 
     LaunchedEffect(metaUiState.meta, parentMetaType, parentMetaId) {
+        if (isManagedLiveTvPlayback(providerAddonId)) return@LaunchedEffect
         val currentMeta = metaUiState.meta ?: return@LaunchedEffect
         if (currentMeta.type == parentMetaType && currentMeta.id == parentMetaId) {
             playerMeta = currentMeta
@@ -731,6 +733,7 @@ internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message:
     removeFailedStreamFromCache()
 
     val savedPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
+    val expectedRefreshPlaybackKey = activePlaybackKey
     val expectedProviderAddonId = activeProviderAddonId
     val expectedProviderName = activeProviderName
     val expectedStreamTitle = activeStreamTitle
@@ -789,6 +792,13 @@ internal fun PlayerScreenRuntime.tryRefreshCredentialedSourceAfterError(message:
                 controlsVisible = !playerControlsLocked
                 return@launch
             }
+
+            if (requireEnglishAudio && !com.nuvio.app.features.streams.verifyBalancedAutoPlay(stream)) {
+                errorMessage = com.nuvio.app.features.streams.BalancedAutoPlayPolicy.FALLBACK_MESSAGE
+                controlsVisible = !playerControlsLocked
+                return@launch
+            }
+            if (profileId != ProfileRepository.activeProfileId || activePlaybackKey != expectedRefreshPlaybackKey) return@launch
 
             flushWatchProgress()
             stopActiveP2pStream()

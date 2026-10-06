@@ -19,7 +19,7 @@ internal fun enrichWatchProgressEntry(
     current: WatchProgressEntry,
     meta: MetaDetails,
 ): WatchProgressEntry {
-    if (current.isUnsupportedMobileLiveTvProgress()) return current
+    if (current.isUnsupportedMobileLiveTvProgress() || current.parentMetaType == "recording") return current
     val episodeVideo = if (current.seasonNumber != null && current.episodeNumber != null) {
         meta.videos.firstOrNull { video ->
             video.season == current.seasonNumber && video.episode == current.episodeNumber
@@ -46,7 +46,7 @@ internal fun enrichWatchProgressEntry(
 }
 
 internal fun WatchProgressEntry.needsRemoteMetadataEnrichment(): Boolean =
-    !isUnsupportedMobileLiveTvProgress() && (
+    parentMetaType != "recording" && !isUnsupportedMobileLiveTvProgress() && (
         title.isBlank() ||
         title.equals(parentMetaId, ignoreCase = true) ||
         poster.isNullOrBlank() ||

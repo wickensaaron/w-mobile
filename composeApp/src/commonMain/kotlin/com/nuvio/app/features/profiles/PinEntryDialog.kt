@@ -11,6 +11,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +46,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -66,6 +72,7 @@ fun PinEntryDialog(
     var isVerifying by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
+    val pinProgressDescription = stringResource(Res.string.profile_pin_digits_entered, pin.length)
 
     BasicAlertDialog(onDismissRequest = onDismiss) {
         Surface(
@@ -74,7 +81,8 @@ fun PinEntryDialog(
             shape = RoundedCornerShape(24.dp),
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                // The dialog host bounds height; scrolling keeps the keypad reachable in landscape/large text.
+                modifier = Modifier.verticalScroll(rememberScrollState()).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
@@ -94,6 +102,10 @@ fun PinEntryDialog(
 
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.semantics {
+                        contentDescription = pinProgressDescription
+                        liveRegion = LiveRegionMode.Polite
+                    },
                 ) {
                     repeat(4) { index ->
                         PinDot(filled = index < pin.length, hasError = error != null)
@@ -110,10 +122,17 @@ fun PinEntryDialog(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
                         textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(top = 12.dp),
+                        modifier = Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite },
                     )
                 }
 
+                if (isVerifying) {
+                    Text(
+                        text = stringResource(Res.string.profile_pin_verifying),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
                 Spacer(modifier = Modifier.height(28.dp))
 
                 PinKeypad(
@@ -241,7 +260,7 @@ private fun PinKeypad(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.Backspace,
-                                    contentDescription = null,
+                                    contentDescription = stringResource(Res.string.pin_backspace),
                                     tint = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.size(24.dp),
                                 )

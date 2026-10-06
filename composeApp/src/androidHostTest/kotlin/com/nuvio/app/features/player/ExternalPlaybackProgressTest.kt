@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.auth.replaceTestAuthState
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.watchprogress.WatchProgressCodec
 import com.nuvio.app.features.watchprogress.WatchProgressPlaybackSession
@@ -29,6 +31,7 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class ExternalPlaybackProgressTest {
+    private lateinit var previousAuthState: AuthState
     private val source = "https://example.com/movie.mkv"
     private fun session(profileId: Int = ProfileRepository.activeProfileId) = WatchProgressPlaybackSession(
         profileId = profileId, contentType = "movie", parentMetaId = "tt123", parentMetaType = "movie",
@@ -37,6 +40,8 @@ class ExternalPlaybackProgressTest {
 
     @Before
     fun initialize() {
+        // Offline/guest playback still has a stable anonymous account owner in the app.
+        previousAuthState = replaceTestAuthState(AuthState.Authenticated("external-playback-test", null, true))
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("nuvio_watch_progress", Context.MODE_PRIVATE).edit().clear().commit()
         context.getSharedPreferences("nuvio_player_settings", Context.MODE_PRIVATE).edit().clear().commit()
@@ -49,6 +54,7 @@ class ExternalPlaybackProgressTest {
     @After
     fun cleanup() {
         WatchProgressRepository.clearLocalState()
+        replaceTestAuthState(previousAuthState)
     }
 
     @Test

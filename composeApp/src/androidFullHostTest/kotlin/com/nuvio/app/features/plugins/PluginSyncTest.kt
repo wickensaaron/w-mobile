@@ -1,6 +1,9 @@
 package com.nuvio.app.features.plugins
 
 import com.nuvio.app.core.network.ServerCapabilities
+import com.nuvio.app.core.auth.AuthState
+import com.nuvio.app.core.auth.replaceTestAuthState
+import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
 import com.nuvio.app.core.network.ServerConfiguration
 import com.nuvio.app.core.network.ServerConfigurationRepository
 import com.nuvio.app.core.network.ServerConfigurationStorage
@@ -13,6 +16,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -31,11 +36,13 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class PluginSyncTest {
+    private lateinit var previousAuthState: AuthState
     private val server = MockWebServer()
     private val manifestUrl get() = server.url("/plugin/manifest.json").toString()
 
     @Before
     fun setUp(): Unit = runBlocking {
+        previousAuthState = replaceTestAuthState(AuthState.Authenticated("plugin-sync-test", null, false))
         val context = RuntimeEnvironment.getApplication()
         SettingsInitializer().create(context)
         PluginStorage.initialize(context)
@@ -64,6 +71,7 @@ class PluginSyncTest {
         SupabaseProvider.reset()
         ServerConfigurationRepository.useOfficial()
         server.shutdown()
+        replaceTestAuthState(previousAuthState)
     }
 
     @Test
@@ -153,6 +161,11 @@ class PluginSyncTest {
     fun emptyRemoteRemovesCachedAddonsWithoutUploadingAndStaysEmptyAfterReload(): Unit = runBlocking {
         AddonStorage.saveInstalledAddonUrls(1, listOf(manifestUrl))
         AddonStorage.saveAddonEnabledStates(1, mapOf(manifestUrl to false))
+        // A known account-owned remote list is deletable; unowned legacy cache is preserved.
+        AddonStorage.saveSyncPayload(1, buildJsonObject {
+            put("owner", assertNotNull(currentNuvioSyncIdentity()))
+            put("hasRemoteSnapshot", true)
+        }.toString())
         AddonRepository.initialize()
         assertEquals(1, AddonRepository.uiState.value.addons.size)
         respond("[]")

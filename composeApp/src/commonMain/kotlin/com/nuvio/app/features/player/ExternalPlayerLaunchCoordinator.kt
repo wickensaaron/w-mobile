@@ -48,7 +48,9 @@ suspend fun prepareExternalPlayerLaunch(
             onOverlayMessage(getString(Res.string.player_external_loading_subtitles))
 
             val downloadedSubtitles = DownloadSubtitles.localSubtitles(request.sourceUrl)
-            val subtitles = if (downloadedSubtitles.isNotEmpty()) {
+            val localPlayback = request.sourceUrl.startsWith("file:", ignoreCase = true) ||
+                request.sourceUrl.startsWith("content:", ignoreCase = true)
+            val subtitles = if (localPlayback || downloadedSubtitles.isNotEmpty()) {
                 downloadedSubtitles
                     .filter {
                         languageMatchesPreference(it.language, preferredLanguage) ||

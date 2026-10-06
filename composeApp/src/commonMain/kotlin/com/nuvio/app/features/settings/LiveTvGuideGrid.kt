@@ -1,5 +1,7 @@
 package com.nuvio.app.features.settings
 
+import com.nuvio.app.features.livetv.*
+
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -87,6 +89,10 @@ internal fun LiveTvGuideGrid(
     onFavoritesOnlyChange: (Boolean) -> Unit,
     onChannelsClick: () -> Unit,
 ) {
+    var archiveSelection by remember(uiState.accountGuideOwner, uiState.accountSourceGeneration) { mutableStateOf<LiveTvCatchupSelection?>(null) }
+    var recordingSelection by remember(uiState.accountGuideOwner) { mutableStateOf<Pair<LiveTvChannel, LiveTvProgramme>?>(null) }
+    var recordNowSelection by remember(uiState.accountGuideOwner) { mutableStateOf<Pair<LiveTvChannel, LiveTvProgramme?>?>(null) }
+    var recordingsOpen by remember(uiState.accountGuideOwner) { mutableStateOf(false) }
     var nowMs by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -94,6 +100,16 @@ internal fun LiveTvGuideGrid(
             nowMs = Clock.System.now().toEpochMilliseconds()
         }
     }
+    archiveSelection?.let { selection ->
+        MobileLiveTvCatchup(selection) { archiveSelection = null }
+    }
+    if (recordingsOpen) MobileLiveTvRecordings(
+        profileId = ProfileRepository.activeProfileId, nowMs = nowMs,
+        selection = recordingSelection, recordNowSelection = recordNowSelection,
+        onClose = { recordingsOpen = false; recordingSelection = null; recordNowSelection = null },
+        onOpenList = { recordingSelection = null; recordNowSelection = null },
+        onPlay = { recording, url -> LiveTvRecordingPlaybackRequests.request(recording, url); recordingsOpen = false },
+    )
     val localProfileId = ProfileRepository.activeProfileId
     val accountOwner = uiState.accountGuideOwner
     var guideTab by rememberSaveable(localProfileId, accountOwner) { mutableStateOf(false) }
@@ -140,6 +156,7 @@ internal fun LiveTvGuideGrid(
                         Text("Settings")
                     }
                 }
+                OutlinedButton(onClick = { recordingsOpen = true; recordingSelection = null; recordNowSelection = null }, modifier = Modifier.fillMaxWidth()) { Text("Recordings") }
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchQueryChange,
@@ -217,7 +234,9 @@ internal fun LiveTvGuideGrid(
             }
             if (selected != null) {
                 item(key = "selected_programme") {
-                    SelectedProgrammeCard(selected.first, selected.second, nowMs, Modifier.padding(horizontal = 16.dp))
+                    SelectedProgrammeCard(selected.first, selected.second, nowMs, Modifier.padding(horizontal = 16.dp),
+                        onCatchup = { archiveSelection = LiveTvRepository.catchupSelection(selected.first.channel) },
+                        onRecord = { recordingSelection = selected.first.channel to selected.second; recordNowSelection = null; recordingsOpen = true })
                 }
             }
             items(visibleRows, key = { "guide:${it.channel.id}" }) { row ->
@@ -229,7 +248,9 @@ internal fun LiveTvGuideGrid(
         } else {
             items(visibleRows, key = { "now:${it.channel.id}" }) { row ->
                 PhoneNowCard(row, prepared.programmesByChannelId[row.channel.id].orEmpty(), uiState, nowMs,
-                    Modifier.padding(horizontal = 16.dp))
+                    Modifier.padding(horizontal = 16.dp),
+                    onCatchup = { archiveSelection = LiveTvRepository.catchupSelection(row.channel) },
+                    onRecordNow = { recordNowSelection = row.channel to prepared.programmesByChannelId[row.channel.id].orEmpty().firstOrNull { it.startEpochMs <= nowMs && it.stopEpochMs > nowMs }; recordingSelection = null; recordingsOpen = true })
             }
         }
         if (visibleRows.isEmpty() && !prepared.isPreparing && !uiState.isGuideLoading && !uiState.isLoading && !uiState.isRestoringAccountSources) {
@@ -302,7 +323,8 @@ private fun PhoneFavourite(row: LiveTvAccountGuideRow, uiState: LiveTvUiState, n
 
 @Composable
 private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProgramme>,
-    uiState: LiveTvUiState, nowMs: Long, modifier: Modifier = Modifier) {
+    uiState: LiveTvUiState, nowMs: Long, modifier: Modifier = Modifier,
+    onCatchup: () -> Unit, onRecordNow: () -> Unit) {
     val current = programmes.firstOrNull { it.startEpochMs <= nowMs && it.stopEpochMs > nowMs }
     val next = programmes.firstOrNull { it.startEpochMs > nowMs }
     val fraction = current?.let {
@@ -329,6 +351,8 @@ private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProg
             Text("Live · ${formatLocalHourMinute(current.startEpochMs)} – ${formatLocalHourMinute(current.stopEpochMs)}",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
+        if (row.channel.archive != null) OutlinedButton(onClick = onCatchup, modifier = Modifier.fillMaxWidth()) { Text("Catch-up / Start over") }
+        OutlinedButton(onClick = onRecordNow, modifier = Modifier.fillMaxWidth()) { Text("Record now") }
         if (current != null && next != null) Text("Next  ${formatLocalHourMinute(next.startEpochMs)} · ${next.title}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -336,7 +360,7 @@ private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProg
 }
 
 @Composable
-private fun SelectedProgrammeCard(row: LiveTvAccountGuideRow, programme: LiveTvProgramme, nowMs: Long, modifier: Modifier) {
+private fun SelectedProgrammeCard(row: LiveTvAccountGuideRow, programme: LiveTvProgramme, nowMs: Long, modifier: Modifier, onCatchup: () -> Unit, onRecord: () -> Unit) {
     val current = programme.startEpochMs <= nowMs && programme.stopEpochMs > nowMs
     Column(modifier = modifier.fillMaxWidth().clip(phoneCardShape).background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -345,7 +369,9 @@ private fun SelectedProgrammeCard(row: LiveTvAccountGuideRow, programme: LiveTvP
         Text("${row.displayName} · ${formatLocalHourMinute(programme.startEpochMs)} – ${formatLocalHourMinute(programme.stopEpochMs)}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         programme.description?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 3) }
-        Button(onClick = { LiveTvRepository.requestPlayback(row.channel) }) { Text(if (current) "▶  Watch live" else "▶  Watch channel") }
+        Button(onClick = { LiveTvRepository.requestPlayback(row.channel) }, modifier = Modifier.fillMaxWidth()) { Text(if (current) "▶  Watch live" else "▶  Watch channel") }
+        if (row.channel.archive != null) OutlinedButton(onClick = onCatchup, modifier = Modifier.fillMaxWidth()) { Text("Catch-up / Start over") }
+        if (programme.stopEpochMs > nowMs) OutlinedButton(onClick = onRecord, modifier = Modifier.fillMaxWidth()) { Text("Record programme") }
     }
 }
 

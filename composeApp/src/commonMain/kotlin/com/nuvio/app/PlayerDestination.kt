@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.features.player.ExternalPlayerIntentResult
@@ -29,6 +32,32 @@ internal fun PlayerDestination(
 ) {
     val onBack = rememberGuardedPopBackStack(navController, route)
     val launch = remember(route.launchId) { PlayerLaunchStore.get(route.launchId) }
+    val liveTvState by com.nuvio.app.features.livetv.LiveTvRepository.uiState.collectAsStateWithLifecycle()
+    val authState by com.nuvio.app.core.auth.AuthRepository.state.collectAsStateWithLifecycle()
+    val profileState by com.nuvio.app.features.profiles.ProfileRepository.state.collectAsStateWithLifecycle()
+    val backend by com.nuvio.app.core.network.ServerConfigurationRepository.active.collectAsStateWithLifecycle()
+    val catchup = remember(route.launchId) {
+        com.nuvio.app.features.livetv.LiveTvCatchupPlaybackRegistry.get(route.launchId)
+    }
+    val owned = remember(launch, catchup, liveTvState, authState, profileState, backend) {
+        when (launch?.providerAddonId) {
+            "live-tv-catchup" -> catchup != null &&
+                com.nuvio.app.features.livetv.LiveTvRepository.ownsCatchup(catchup.selection)
+            "live-tv-recording" -> com.nuvio.app.features.livetv.isCurrentRecordingPlaybackRequest(launch)
+            else -> true
+        }
+    }
+    DisposableEffect(route.launchId) {
+        onDispose { com.nuvio.app.features.livetv.LiveTvCatchupPlaybackRegistry.remove(route.launchId) }
+    }
+    if (!owned) {
+        LaunchedEffect(route.launchId, owned) {
+            NuvioToastController.show("Your account or TV source changed. Open the programme again.")
+            onBack()
+        }
+        Box(modifier = Modifier.fillMaxSize())
+        return
+    }
     if (launch == null) {
         LaunchedEffect(route.launchId) {
             onBack()
@@ -71,8 +100,18 @@ internal fun PlayerDestination(
         torrentTrackers = launch.torrentTrackers,
         initialPositionMs = launch.initialPositionMs,
         initialProgressFraction = launch.initialProgressFraction,
+        recordingProgrammeStartOffsetMs = launch.recordingProgrammeStartOffsetMs,
         contentLanguage = launch.contentLanguage,
+        requireEnglishAudio = launch.requireEnglishAudio,
         coreSelectionReference = launch.coreSelectionReference,
+        onReturnToLive = catchup?.let { request ->
+            {
+                if (com.nuvio.app.features.livetv.LiveTvRepository.ownsCatchup(request.selection)) {
+                    onBack()
+                    com.nuvio.app.features.livetv.LiveTvRepository.requestPlayback(request.selection.channel)
+                }
+            }
+        },
         onBack = onBack,
         onOpenInExternalPlayer = { request ->
             val playerLaunch = PlayerLaunch(

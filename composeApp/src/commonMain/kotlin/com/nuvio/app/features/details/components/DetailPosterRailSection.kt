@@ -44,6 +44,7 @@ fun DetailPosterRailSection(
     headerHorizontalPadding: Dp = 0.dp,
     horizontalScrollPadding: Dp = 0.dp,
     sourceLabel: String? = null,
+    onViewAllClick: (() -> Unit)? = null,
     onPosterClick: ((MetaPreview) -> Unit)? = null,
     onPosterLongClick: ((MetaPreview) -> Unit)? = null,
 ) {
@@ -58,6 +59,7 @@ fun DetailPosterRailSection(
         NuvioShelfSection(
             title = if (showHeader) title else "",
             entries = items,
+            onViewAllClick = onViewAllClick,
             headerHorizontalPadding = headerHorizontalPadding,
             rowContentPadding = PaddingValues(
                 horizontal = headerHorizontalPadding + horizontalScrollPadding,

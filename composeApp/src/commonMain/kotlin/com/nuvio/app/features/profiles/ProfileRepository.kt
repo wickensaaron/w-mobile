@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -92,6 +93,7 @@ object ProfileRepository {
     private var pendingProfiles: AccountReplacement<ProfilePushPayload>? = null
     private var recoveryPayload: String? = null
     private val profileSyncMutex = Mutex()
+    private val profileSwitchCoordinator = ProfileSwitchCoordinator<Pair<Long, String?>>()
 
     val activeProfileId: Int get() = activeProfileIndex
 
@@ -217,7 +219,18 @@ object ProfileRepository {
         onFailure = { error -> log.w(error) { "Keeping local profiles for retry" } },
     )
 
-    fun selectProfile(profileIndex: Int) {
+    suspend fun switchToProfile(profileIndex: Int): Boolean {
+        val owner = generation to currentNuvioSyncIdentity()
+        // iOS download callbacks and mutable native bridge maps are confined to the main queue.
+        // Move individual storage operations off-main only after those boundaries are separated.
+        return withContext(Dispatchers.Main.immediate) {
+            profileSwitchCoordinator.switch(owner, { generation to currentNuvioSyncIdentity() }) {
+                selectProfile(profileIndex)
+            }
+        }
+    }
+
+    private fun selectProfile(profileIndex: Int) {
         if (activeProfileIndex != profileIndex) WCoreConnectionRepository.onProfileChanged()
         activeProfileIndex = profileIndex
         CustomPosterUrlRepository.onProfileChanged()

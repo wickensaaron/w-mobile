@@ -83,6 +83,7 @@ open class MainActivity : AppCompatActivity() {
                 scrim = 0xFF020404.toInt(),
             ),
         )
+        com.nuvio.app.features.streaming.StreamingAvailabilityStorage.initialize(applicationContext)
         ThemeSettingsStorage.initialize(applicationContext)
         AppIconPlatform.initialize(applicationContext)
         SentrySettingsStorage.initialize(applicationContext)

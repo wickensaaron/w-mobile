@@ -243,7 +243,7 @@ private fun WatchProgressEntry.toDomainProgressRecord(): WatchingProgressRecord 
 internal fun scrubCoreSourceUrl(providerAddonId: String?, url: String?): String? {
     if (providerAddonId?.trim()?.lowercase() in setOf(
             "live", "livetv", "live-tv", "live_tv", "catchup", "catchup-partial",
-            "live-tv-replay", "live-tv-catchup",
+            "live-tv-replay", "live-tv-catchup", "recording", "live-tv-recording",
         )) return null
     if (providerAddonId == "wcore" || providerAddonId?.startsWith("wcore:", ignoreCase = true) == true) return null
     if (url == null) return null

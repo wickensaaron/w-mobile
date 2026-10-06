@@ -1,9 +1,14 @@
 package com.nuvio.app.features.downloads
 
 import android.content.pm.ProviderInfo
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import androidx.core.content.FileProvider
 import com.nuvio.app.R
+import com.nuvio.app.features.addons.AddonRepository
+import com.nuvio.app.features.addons.AddonStorage
+import com.nuvio.app.features.addons.AddAddonResult
 import com.nuvio.app.features.player.ExternalPlayerPlaybackRequest
 import com.nuvio.app.features.player.PlayerSubtitleCueParser
 import com.nuvio.app.features.player.SubtitleFileCache
@@ -14,6 +19,7 @@ import com.nuvio.app.features.streams.StreamSubtitle
 import java.io.File
 import java.net.URI
 import java.util.Collections
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -29,11 +35,17 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implements
+import org.robolectric.annotation.Implementation
+import org.xmlpull.v1.XmlPullParser
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -81,11 +93,18 @@ class DownloadSubtitlesTest {
         try {
             val transfer = scheduler.store.begin(item)
             assertFalse(scheduler.execute(transfer) { })
+            val completed = assertNotNull(scheduler.store.get(item.fileName)).item
+            assertEquals(DownloadStatus.Completed, completed.status, "In-memory transfer failed: ${completed.errorMessage}")
+            val reloaded = AndroidDownloadStore(File(context.filesDir, "download-transfers")).get(item.fileName)
+            assertNotNull(reloaded, "Persisted transfer could not be decoded; records: " +
+                File(context.filesDir, "download-transfers").listFiles().orEmpty().map { it.name })
+            assertEquals(DownloadStatus.Completed, reloaded.item.status, "Persisted transfer was not completed")
         } finally {
             server.shutdown()
         }
 
         val restored = AndroidDownloadScheduler(context).restore(item)
+        assertEquals(DownloadStatus.Completed, restored.status, "Download failed: ${restored.errorMessage}; requested paths: $paths")
         val uri = assertNotNull(restored.localFileUri)
         val tracks = DownloadSubtitles.localSubtitles(uri)
         assertEquals(DownloadStatus.Completed, restored.status)
@@ -156,6 +175,7 @@ class DownloadSubtitlesTest {
     }
 
     @Test
+    @Config(shadows = [HostFileProviderShadow::class], instrumentedPackages = ["androidx.core.content"])
     fun externalPlayersReceiveReadableLocalSubtitlesWithoutAddonRequests(): Unit = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val provider = ProviderInfo().apply {
@@ -190,10 +210,44 @@ class DownloadSubtitlesTest {
             )
         }
         val forwarded = assertNotNull(request.subtitles).single()
-        assertTrue(forwarded.url.startsWith("content://"))
+        assertTrue(forwarded.url.startsWith("content://"),
+            "Local subtitle was not shared: " + ShadowLog.getLogsForTag("SubtitleFileCache").joinToString { "${it.msg}: ${it.throwable}" })
         assertEquals(srt, File(context.cacheDir, "subtitles/en_English.srt").readText())
         SubtitleFileCache.clearCache()
         assertEquals(srt, File(URI(permanentTrack.url)).readText())
+    }
+
+    @Test
+    fun offlinePlaybackWithoutSavedSubtitlesDoesNotQueryInstalledAddons(): Unit = runBlocking {
+        AddonStorage.initialize(RuntimeEnvironment.getApplication())
+        AddonRepository.clearLocalState()
+        SubtitleRepository.clear()
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = if (request.path == "/manifest.json") {
+                    MockResponse().setBody("""{"id":"offline-test","name":"Subtitle test","version":"1.0.0","resources":["subtitles"],"types":["movie"],"catalogs":[]}""")
+                } else {
+                    MockResponse().setBody("""{"subtitles":[]}""")
+                }
+            }
+            try {
+                assertIs<AddAddonResult.Success>(AddonRepository.addAddon(server.url("/manifest.json").toString()))
+                assertEquals("/manifest.json", assertNotNull(server.takeRequest(2, TimeUnit.SECONDS)).path)
+                val request = withTimeout(2_000) {
+                    prepareExternalPlayerLaunch(
+                        request = ExternalPlayerPlaybackRequest(File(temporary.newFolder(), "offline.mkv").toURI().toString(), "Offline movie"),
+                        type = "movie", videoId = "offline", forwardSubtitles = true,
+                        sendSkipSegments = false, preferredLanguage = "en", secondaryLanguage = null,
+                        onOverlayMessage = {},
+                    )
+                }
+                assertNull(request.subtitles)
+                assertNull(server.takeRequest(250, TimeUnit.MILLISECONDS), "Offline playback must not query subtitle addons")
+            } finally {
+                AddonRepository.clearLocalState()
+                SubtitleRepository.clear()
+            }
+        }
     }
 
     @Test
@@ -210,4 +264,36 @@ class DownloadSubtitlesTest {
     }
 
     private val srt = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+}
+
+/**
+ * AndroidX FileProvider compares canonical paths with an Android '/' separator,
+ * which cannot match Windows host paths in Robolectric. Emulate only URI sharing
+ * here; the subtitle is still copied/read normally and checked against the actual
+ * configured cache root. Real Android FileProvider integration remains a device check.
+ */
+@Implements(value = FileProvider::class, isInAndroidSdk = false)
+class HostFileProviderShadow {
+    companion object {
+        @JvmStatic
+        @Implementation
+        fun getUriForFile(context: Context, authority: String, file: File): Uri {
+            val provider = requireNotNull(context.packageManager.resolveContentProvider(authority, 128))
+            val paths = requireNotNull(provider.loadXmlMetaData(context.packageManager, "android.support.FILE_PROVIDER_PATHS"))
+            paths.use { parser ->
+                while (parser.next() != XmlPullParser.END_DOCUMENT) {
+                    if (parser.eventType != XmlPullParser.START_TAG || parser.name != "cache-path") continue
+                    val name = requireNotNull(parser.getAttributeValue(null, "name"))
+                    val path = parser.getAttributeValue(null, "path").orEmpty()
+                    val root = File(context.cacheDir, path).canonicalFile.toPath()
+                    val target = file.canonicalFile.toPath()
+                    if (!target.startsWith(root) || target == root) continue
+                    val relative = root.relativize(target).toString().replace(File.separatorChar, '/')
+                    return Uri.Builder().scheme("content").authority(authority).appendPath(name)
+                        .appendEncodedPath(relative).build()
+                }
+            }
+            error("File is outside the provider's configured cache roots")
+        }
+    }
 }

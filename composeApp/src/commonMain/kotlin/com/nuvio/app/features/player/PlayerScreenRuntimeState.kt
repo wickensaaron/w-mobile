@@ -27,6 +27,7 @@ internal class PlayerScreenRuntime(
     args: PlayerScreenArgs,
 ) {
     var args by mutableStateOf(args)
+    var requireEnglishAudio by mutableStateOf(args.requireEnglishAudio)
 
     val title: String get() = args.title
     val profileId: Int get() = args.profileId

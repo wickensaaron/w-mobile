@@ -1,5 +1,7 @@
 package com.nuvio.app
 
+import com.nuvio.app.features.streaming.StreamingService
+
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -110,6 +112,9 @@ internal data class AppTabActions(
     val onCheckForUpdatesClick: (() -> Unit)? = null,
     val onTestUpdateBannerClick: (() -> Unit)? = null,
     val onCollectionsSettingsClick: () -> Unit = {},
+    val onStreamingServiceClick: (StreamingService) -> Unit = {},
+    val onFilmFranchiseClick: (Int, String) -> Unit = { _, _ -> },
+    val onFilmCollectionsBrowseClick: () -> Unit = {},
     val onFolderClick: ((collectionId: String, folderId: String) -> Unit)? = null,
     val onRequestedSettingsPageConsumed: () -> Unit = {},
     val onInitialHomeContentRendered: () -> Unit = {},
@@ -143,6 +148,9 @@ internal fun AppTabHost(
                         onContinueWatchingLongPress = actions.onContinueWatchingLongPress,
                         continueWatchingDisintegrationRequest = state.continueWatchingDisintegrationRequest,
                         onFolderClick = actions.onFolderClick,
+                        onStreamingServiceClick = actions.onStreamingServiceClick,
+                        onFilmFranchiseClick = actions.onFilmFranchiseClick,
+                        onFilmCollectionsBrowseClick = actions.onFilmCollectionsBrowseClick,
                         onFirstCatalogRendered = actions.onInitialHomeContentRendered,
                     )
                 }

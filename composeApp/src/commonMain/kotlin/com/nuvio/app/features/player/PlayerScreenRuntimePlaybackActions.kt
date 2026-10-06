@@ -82,7 +82,7 @@ internal val PlayerScreenRuntime.playbackSession: WatchProgressPlaybackSession
         lastStreamTitle = activeStreamTitle,
         lastStreamSubtitle = activeStreamSubtitle,
         pauseDescription = activePauseDescription,
-        lastSourceUrl = activeSourceUrl,
+        lastSourceUrl = activeSourceUrl.takeUnless { isManagedLiveTvPlayback(activeProviderAddonId) },
     )
 
 internal fun PlayerScreenRuntime.resetIdentityStateIfNeeded() {
@@ -299,6 +299,7 @@ internal suspend fun PlayerScreenRuntime.resolveParentalGuideImdbId(): String? {
 internal fun PlayerScreenRuntime.flushWatchProgress(
     scrobbleAction: TrackingScrobbleAction = TrackingScrobbleAction.STOP,
 ) {
+    if (!canPersistManagedPlayback()) return
     when (scrobbleAction) {
         TrackingScrobbleAction.PAUSE -> emitTrackingScrobblePause()
         TrackingScrobbleAction.STOP -> emitStopScrobbleForCurrentProgress()
@@ -315,6 +316,7 @@ internal fun PlayerScreenRuntime.scheduleProgressSyncAfterSeek() {
     seekProgressSyncJob?.cancel()
     seekProgressSyncJob = scope.launch {
         delay(PlayerSeekProgressSyncDebounceMs)
+        if (!canPersistManagedPlayback()) return@launch
         WatchProgressRepository.upsertPlaybackProgress(
             session = playbackSession,
             snapshot = playbackSnapshot,
@@ -360,6 +362,7 @@ internal fun PlayerScreenRuntime.scheduleProgressSyncAfterSeek() {
 }
 
 internal fun PlayerScreenRuntime.persistPlaybackProgressTick() {
+    if (!canPersistManagedPlayback()) return
     val now = WatchProgressClock.nowEpochMs()
     if (now - lastProgressPersistEpochMs < PlaybackProgressPersistIntervalMs) return
     lastProgressPersistEpochMs = now
@@ -369,3 +372,8 @@ internal fun PlayerScreenRuntime.persistPlaybackProgressTick() {
         syncRemote = false,
     )
 }
+
+private fun PlayerScreenRuntime.canPersistManagedPlayback(): Boolean =
+    activeProviderAddonId != "live-tv-catchup" ||
+        (contentType != "catchup-partial" &&
+            com.nuvio.app.features.livetv.LiveTvRepository.catchupHistorySelection(profileId, activeVideoId.orEmpty()) != null)

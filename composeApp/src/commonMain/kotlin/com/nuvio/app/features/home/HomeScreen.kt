@@ -27,6 +27,9 @@ import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.network.WCoreNativeLibrary
 import com.nuvio.app.core.network.WCoreConnectionRepository
 import com.nuvio.app.core.network.WCoreConnectionStatus
+import com.nuvio.app.features.streaming.StreamingService
+import com.nuvio.app.features.streaming.StreamingServiceHomeRow
+import com.nuvio.app.features.franchise.FilmFranchiseHomeRow
 import com.nuvio.app.features.home.components.HomeNativeRowSection
 import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
@@ -130,6 +133,9 @@ fun HomeScreen(
     continueWatchingDisintegrationRequest: DisintegrationRequest<String>? = null,
     onFolderClick: ((collectionId: String, folderId: String) -> Unit)? = null,
     onFirstCatalogRendered: (() -> Unit)? = null,
+    onStreamingServiceClick: ((StreamingService) -> Unit)? = null,
+    onFilmFranchiseClick: ((Int, String) -> Unit)? = null,
+    onFilmCollectionsBrowseClick: (() -> Unit)? = null,
 ) {
     LaunchedEffect(Unit) {
         AddonRepository.initialize()
@@ -228,7 +234,7 @@ fun HomeScreen(
         continueWatchingCutoffEpochMs,
     ) {
         val visibleProviderEntries = watchProgressUiState.entries.filterNot { entry ->
-            entry.isUnsupportedMobileLiveTvProgress() ||
+            (entry.isUnsupportedMobileLiveTvProgress() && !entry.isMobileCatchupResume()) ||
                 entry.parentMetaId in watchProgressUiState.hiddenContentIds ||
                 WatchProgressRepository.isDroppedShow(entry.parentMetaId)
         }
@@ -1071,6 +1077,14 @@ fun HomeScreen(
                         onItemLongPress = onContinueWatchingLongPress,
                         disintegrationRequest = continueWatchingDisintegrationRequest,
                     )
+                    homeDiscoverySections(
+                        profileId = activeProfileId,
+                        sectionPadding = homeSectionPadding,
+                        onPosterClick = onPosterClick,
+                        onStreamingServiceClick = onStreamingServiceClick,
+                        onFilmFranchiseClick = onFilmFranchiseClick,
+                        onFilmCollectionsBrowseClick = onFilmCollectionsBrowseClick,
+                    )
                     item(key = "home_empty", contentType = "empty") {
                         when {
                             networkStatusUiState.isOfflineLike && addonManifestErrorMessage != null -> {
@@ -1111,6 +1125,14 @@ fun HomeScreen(
                 homeUiState.sections.isEmpty() && homeUiState.heroItems.isEmpty() &&
                     (!continueWatchingPreferences.isVisible || !hasContinueWatchingRows) &&
                     !hasRenderableCollectionRows && coreLibraryItems.isEmpty() -> {
+                    homeDiscoverySections(
+                        profileId = activeProfileId,
+                        sectionPadding = homeSectionPadding,
+                        onPosterClick = onPosterClick,
+                        onStreamingServiceClick = onStreamingServiceClick,
+                        onFilmFranchiseClick = onFilmFranchiseClick,
+                        onFilmCollectionsBrowseClick = onFilmCollectionsBrowseClick,
+                    )
                     item(key = "home_empty", contentType = "empty") {
                         val loadFailed = !homeUiState.errorMessage.isNullOrBlank()
                         if (networkStatusUiState.isOfflineLike && loadFailed) {
@@ -1163,6 +1185,14 @@ fun HomeScreen(
                         disintegrationRequest = continueWatchingDisintegrationRequest,
                     )
 
+                    homeDiscoverySections(
+                        profileId = activeProfileId,
+                        sectionPadding = homeSectionPadding,
+                        onPosterClick = onPosterClick,
+                        onStreamingServiceClick = onStreamingServiceClick,
+                        onFilmFranchiseClick = onFilmFranchiseClick,
+                        onFilmCollectionsBrowseClick = onFilmCollectionsBrowseClick,
+                    )
                     if (coreLibraryItems.isNotEmpty()) {
                         item(key = "wcore_jellyfin_recent", contentType = "catalog") {
                             HomeNativeRowSection(
@@ -1221,6 +1251,28 @@ fun HomeScreen(
     }
 }
 
+private fun LazyListScope.homeDiscoverySections(
+    profileId: Int,
+    sectionPadding: Dp,
+    onPosterClick: ((MetaPreview) -> Unit)?,
+    onStreamingServiceClick: ((StreamingService) -> Unit)?,
+    onFilmFranchiseClick: ((Int, String) -> Unit)?,
+    onFilmCollectionsBrowseClick: (() -> Unit)?,
+) {
+    item(key = "for_you", contentType = "discovery") {
+        ForYouHomeRow(profileId, sectionPadding, onPosterClick)
+    }
+    if (onStreamingServiceClick != null) {
+        item(key = "streaming_services", contentType = "discovery") {
+            StreamingServiceHomeRow(sectionPadding, onStreamingServiceClick)
+        }
+    }
+    if (onFilmFranchiseClick != null) {
+        item(key = "film_franchises", contentType = "discovery") {
+            FilmFranchiseHomeRow(sectionPadding, onFilmFranchiseClick, onFilmCollectionsBrowseClick ?: {})
+        }
+    }
+}
 private fun LazyListScope.homeContinueWatchingSections(
     preferences: ContinueWatchingPreferencesUiState,
     continueWatchingItems: List<ContinueWatchingItem>,
@@ -1610,7 +1662,7 @@ internal fun buildHomeContinueWatchingItems(
 
     val candidates = buildList {
         addAll(
-            visibleEntries.filterNot(WatchProgressEntry::isUnsupportedMobileLiveTvProgress).map { entry ->
+            visibleEntries.filter { !it.isUnsupportedMobileLiveTvProgress() || it.isMobileCatchupResume() }.map { entry ->
                 val liveItem = entry.toContinueWatchingItem()
                 HomeContinueWatchingCandidate(
                     lastUpdatedEpochMs = entry.lastUpdatedEpochMs,
@@ -1876,7 +1928,7 @@ private fun CompletedSeriesCandidate.toContinueWatchingSeed(meta: com.nuvio.app.
     )
 
 private fun ContinueWatchingItem.shouldDisplayInContinueWatching(): Boolean =
-    !isUnsupportedMobileLiveTvProgress() && (isNextUp || progressFraction < 0.995f)
+    (!isUnsupportedMobileLiveTvProgress() || (parentMetaType == "catchup" && com.nuvio.app.features.livetv.parseLiveTvCatchupHistoryId(videoId) != null)) && (isNextUp || progressFraction < 0.995f)
 
 private fun CachedNextUpItem.toContinueWatchingItem(
     releaseEpochMs: Long?,
@@ -2040,3 +2092,8 @@ private fun ContinueWatchingItem.isCloudLibraryContinueWatchingItem(): Boolean =
 private fun WatchProgressEntry.isCloudLibraryProgressEntry(): Boolean =
     contentType.equals(CloudLibraryContentType, ignoreCase = true) ||
         parentMetaType.equals(CloudLibraryContentType, ignoreCase = true)
+
+/** Archive progress bypasses addon metadata; playback always revalidates the exact provider history. */
+private fun WatchProgressEntry.isMobileCatchupResume(): Boolean =
+    parentMetaType == "catchup" && contentType != "catchup-partial" &&
+        com.nuvio.app.features.livetv.parseLiveTvCatchupHistoryId(videoId) != null

@@ -4,11 +4,101 @@ import AVFoundation
 import Libmpv
 import ComposeApp
 
+/// A separate paused handle inspects metadata without a view, renderer, or audio session.
+/// This runs on Kotlin's background dispatcher, never on the UIKit thread.
+private enum IOSBalancedAutoProbe {
+    private static let lock = NSLock()
+    private static var verifiedTracks: [String: Int32] = [:]
+    private static var verifiedOrder: [String] = []
+
+    static func isEnglish(_ language: String) -> Bool {
+        let code = language.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased().replacingOccurrences(of: "_", with: "-")
+        return ["en", "eng", "english"].contains(code) || code.hasPrefix("en-")
+    }
+
+    static func trackId(for url: String) -> Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return verifiedTracks[url]
+    }
+
+    private static func remember(_ track: Int32, url: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        verifiedOrder.removeAll { $0 == url }
+        while verifiedOrder.count >= 32 {
+            verifiedTracks.removeValue(forKey: verifiedOrder.removeFirst())
+        }
+        verifiedOrder.append(url)
+        verifiedTracks[url] = track
+    }
+
+    static func inspect(url: String, headers: [String: String], maxBytes: Int64, timeoutMs: Int64) -> Int32 {
+        guard !Thread.isMainThread, !url.isEmpty, maxBytes > 0, let handle = mpv_create() else { return -1 }
+        defer { mpv_terminate_destroy(handle) }
+        for (key, value) in [("vo", "null"), ("ao", "null"), ("pause", "yes"), ("idle", "yes"),
+                             ("config", "no"), ("load-scripts", "no"), ("ytdl", "no"),
+                             ("network-timeout", "5"), ("msg-level", "all=no")] {
+            guard mpv_set_option_string(handle, key, value) >= 0 else { return -1 }
+        }
+        let fields = headers.sorted { $0.key.lowercased() < $1.key.lowercased() }.compactMap { key, value -> String? in
+            guard !key.isEmpty, key.lowercased() != "range",
+                  !key.contains("\r"), !key.contains("\n"),
+                  !value.contains("\r"), !value.contains("\n") else { return nil }
+            let escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: ",", with: "\\,")
+            return "\(key): \(escaped)"
+        }.joined(separator: ",")
+        if !fields.isEmpty && mpv_set_option_string(handle, "http-header-fields", fields) < 0 { return -1 }
+        guard mpv_initialize(handle) >= 0 else { return -1 }
+        var args = ["loadfile", url, "replace"].map { UnsafePointer<CChar>(strdup($0)) }
+        args.append(nil)
+        defer { for ptr in args { if let ptr { free(UnsafeMutablePointer(mutating: ptr)) } } }
+        guard mpv_command(handle, &args) >= 0 else { return -1 }
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(max(1, min(timeoutMs, 8_000))) / 1_000
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            guard let event = mpv_wait_event(handle, 0.1) else { continue }
+            switch event.pointee.event_id {
+            case MPV_EVENT_FILE_LOADED:
+                var size: Int64 = 0
+                if mpv_get_property(handle, "file-size", MPV_FORMAT_INT64, &size) >= 0 && size > maxBytes { return -2 }
+                var count: Int64 = 0
+                guard mpv_get_property(handle, "track-list/count", MPV_FORMAT_INT64, &count) >= 0, count > 0 else { return -1 }
+                for index in 0..<min(count, 512) {
+                    func text(_ field: String) -> String {
+                        guard let ptr = mpv_get_property_string(handle, "track-list/\(index)/\(field)") else { return "" }
+                        defer { mpv_free(ptr) }
+                        return String(cString: ptr)
+                    }
+                    guard text("type") == "audio", isEnglish(text("lang")) else { continue }
+                    var track: Int64 = -1
+                    guard mpv_get_property(handle, "track-list/\(index)/id", MPV_FORMAT_INT64, &track) >= 0,
+                          track >= 0, track <= Int64(Int32.max) else { continue }
+                    remember(Int32(track), url: url)
+                    return Int32(track)
+                }
+                return -1
+            case MPV_EVENT_END_FILE, MPV_EVENT_SHUTDOWN:
+                return -1
+            default:
+                continue
+            }
+        }
+        return -1
+    }
+}
+
 // MARK: - Player Bridge Implementation (Kotlin protocol conformance)
 
 final class MPVPlayerBridgeImpl: NSObject, NuvioPlayerBridge {
 
     private var playerVC: MPVPlayerViewController?
+
+    func probeAutoPlay(url: String, headersJson: String?, maxBytes: Int64, timeoutMs: Int64) -> Int32 {
+        IOSBalancedAutoProbe.inspect(url: url, headers: parseRequestHeaders(headersJson),
+                                     maxBytes: maxBytes, timeoutMs: timeoutMs)
+    }
 
     func createPlayerViewController() -> UIViewController {
         return ensurePlayerViewController()
@@ -264,6 +354,7 @@ final class MPVPlayerViewController: UIViewController {
     private var externallyManagedViewSize: CGSize?
     private var pendingSurfaceLayoutWorkItems: [DispatchWorkItem] = []
     private var pendingLoadRequest: PendingLoadRequest?
+    private var loadedSourceUrl: String?
     private var pendingLoadRetryWorkItem: DispatchWorkItem?
     private var mpv: OpaquePointer?
     private var cachedNowPlayingMetadata: CachedNowPlayingMetadata?
@@ -596,7 +687,11 @@ final class MPVPlayerViewController: UIViewController {
         applyRequestHeaders(sanitizedHeaders)
         isPlayerLoading = true
         isPlayerEnded = false
+        loadedSourceUrl = request.urlString
         applyAudioLanguagePreferences(preferredAudioLanguages)
+        if let trackId = IOSBalancedAutoProbe.trackId(for: request.urlString) {
+            setStringProperty("aid", "\(trackId)")
+        }
         command("loadfile", args: [request.urlString, "replace"])
         if let audioUrl = request.audioUrl, !audioUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -757,7 +852,12 @@ final class MPVPlayerViewController: UIViewController {
         if let currentId = getString("aid"), Int(currentId) != nil {
             setStringProperty("aid", currentId)
         }
-        setStringProperty("aid", "auto")
+        if languages.contains(where: IOSBalancedAutoProbe.isEnglish),
+           let url = loadedSourceUrl, let trackId = IOSBalancedAutoProbe.trackId(for: url) {
+            setStringProperty("aid", "\(trackId)")
+        } else {
+            setStringProperty("aid", "auto")
+        }
     }
 
     func selectSubtitle(_ trackId: Int) {

@@ -44,6 +44,9 @@ import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.streams.StreamsScreen
 import com.nuvio.app.features.streams.shouldShowAutoPlayLoading
 import com.nuvio.app.features.streams.shouldUseLandscapeAutoPlayLoading
+import com.nuvio.app.features.streams.BalancedAutoPlayPolicy
+import com.nuvio.app.features.streams.balancedAutoPlayEnabled
+import com.nuvio.app.features.streams.verifyBalancedAutoPlay
 import com.nuvio.app.features.streams.StreamsUiState
 import com.nuvio.app.navigation.*
 import kotlinx.coroutines.launch
@@ -288,6 +291,8 @@ internal fun StreamDestination(
         if (reuseHandled) return@LaunchedEffect
         reuseHandled = true
         if (launch.manualSelection) return@LaunchedEffect
+        // Saved manual links cannot bypass AUTO inspection.
+        if (balancedAutoPlayEnabled) return@LaunchedEffect
         if (!playerSettings.streamReuseLastLinkEnabled) return@LaunchedEffect
         val cacheKey = StreamLinkCacheRepository.contentKey(
             type = launch.type,
@@ -390,6 +395,16 @@ internal fun StreamDestination(
     )
     SideEffect { onLandscapeLoadingChanged(useLandscapeLoading) }
     var autoPlayHandled by rememberSaveable(launch.videoId, effectiveVideoId) { mutableStateOf(false) }
+    val inspectedAutoSources = remember(expectedStreamsRequestToken) { mutableSetOf<String>() }
+    fun rejectAutoCandidate(stream: StreamItem) {
+        val hasNext = StreamsRepository.skipAutoPlayStream(stream)
+        if (!hasNext || inspectedAutoSources.size >= BalancedAutoPlayPolicy.MAX_ATTEMPTS) {
+            autoPlayHandled = true
+            StreamsRepository.consumeAutoPlay()
+            StreamsRepository.setOverlayVisible(false)
+            NuvioToastController.show(BalancedAutoPlayPolicy.FALLBACK_MESSAGE)
+        }
+    }
     LaunchedEffect(
         streamsUiState.autoPlayStream,
         streamsUiState.requestToken,
@@ -442,6 +457,20 @@ internal fun StreamDestination(
             selectedStream
         }
         val sourceUrl = stream.playableDirectUrl
+        if (balancedAutoPlayEnabled) {
+            if (sourceUrl == null || !inspectedAutoSources.add(sourceUrl)) {
+                rejectAutoCandidate(selectedStream)
+                return@LaunchedEffect
+            }
+            StreamsRepository.setOverlayVisible(true, "Checking English audio…")
+            val verified = verifyBalancedAutoPlay(stream)
+            currentCoroutineContext().ensureActive()
+            if (launchProfileId != ProfileRepository.activeProfileId || StreamsRepository.uiState.value.requestToken != expectedStreamsRequestToken) return@LaunchedEffect
+            if (!verified) {
+                rejectAutoCandidate(selectedStream)
+                return@LaunchedEffect
+            }
+        }
         if (sourceUrl == null && stream.needsLocalDebridResolve && stream.p2pInfoHash != null) {
             autoPlayHandled = true
             requestOrOpenP2pStream(
@@ -513,7 +542,8 @@ internal fun StreamDestination(
             initialProgressFraction = launch.resumeProgressFraction,
             contentLanguage = resolveLaunchContentLanguage(),
         )
-        if (playerSettings.externalPlayerEnabled && !stream.isWCoreStream) {
+        val verifiedPlayerLaunch = playerLaunch.copy(requireEnglishAudio = balancedAutoPlayEnabled)
+        if (!balancedAutoPlayEnabled && playerSettings.externalPlayerEnabled && !stream.isWCoreStream) {
             openExternalPlayback(playerLaunch)
             StreamsRepository.consumeAutoPlay()
             StreamsRepository.cancelLoading()
@@ -522,8 +552,8 @@ internal fun StreamDestination(
         StreamsRepository.consumeAutoPlay()
         StreamsRepository.cancelLoading()
         autoPlayNavigationStarted = true
-        val launchId = PlayerLaunchStore.put(playerLaunch)
-        navController.navigate(PlayerRoute(launchId = launchId, title = playerLaunch.title)) {
+        val launchId = PlayerLaunchStore.put(verifiedPlayerLaunch)
+        navController.navigate(PlayerRoute(launchId = launchId, title = verifiedPlayerLaunch.title)) {
             popUpTo<StreamRoute> { inclusive = true }
         }
     }

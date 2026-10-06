@@ -52,10 +52,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -120,6 +122,7 @@ fun ProfileSelectionScreen(
             .fillMaxSize(),
     ) {
         val isTabletLayout = maxWidth >= 768.dp
+        val phoneLayout = profilePickerLayout(maxWidth.value - 48f, LocalDensity.current.fontScale)
         ProfileBackgroundBackdrop(
             profile = backgroundProfile,
             modifier = Modifier.fillMaxSize(),
@@ -222,13 +225,14 @@ fun ProfileSelectionScreen(
                                 horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                for (col in 0..1) {
+                                for (col in 0 until phoneLayout.columns) {
                                     if (index < items) {
                                         val currentIndex = index
                                         if (currentIndex < profiles.size) {
                                             val profile = profiles[currentIndex]
                                             ProfileAvatarCard(
                                                 profile = profile,
+                                                cardWidth = phoneLayout.cardWidthDp.dp,
                                                 isEditMode = isEditMode,
                                                 animDelay = currentIndex * 80,
                                                 enabled = interactionEnabled,
@@ -238,6 +242,7 @@ fun ProfileSelectionScreen(
                                             )
                                         } else {
                                             AddProfileCard(
+                                                cardWidth = phoneLayout.cardWidthDp.dp,
                                                 animDelay = currentIndex * 80,
                                                 enabled = interactionEnabled,
                                                 onClick = onAddProfile,
@@ -246,7 +251,7 @@ fun ProfileSelectionScreen(
                                         index++
                                     } else {
                                         if (profiles.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.width(150.dp))
+                                            Spacer(modifier = Modifier.width(phoneLayout.cardWidthDp.dp))
                                         }
                                     }
                                 }
@@ -325,6 +330,7 @@ private fun ProfileAvatarCard(
     animDelay: Int,
     enabled: Boolean,
     onClick: () -> Unit,
+    cardWidth: Dp = 150.dp,
 ) {
     val avatarColor = remember(profile.avatarColorHex) {
         parseHexColor(profile.avatarColorHex)
@@ -355,7 +361,7 @@ private fun ProfileAvatarCard(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(150.dp)
+            .width(cardWidth)
             .graphicsLayer {
                 alpha = animAlpha.value
                 scaleX = animScale.value * pressScale
@@ -405,7 +411,7 @@ private fun ProfileAvatarCard(
                 if (avatarImageUrl != null) {
                     AsyncImage(
                         model = avatarImageUrl,
-                        contentDescription = avatarItem?.displayName ?: profile.name,
+                        contentDescription = null,
                         modifier = Modifier.size(100.dp).clip(CircleShape),
                         contentScale = ContentScale.Crop,
                     )
@@ -475,7 +481,7 @@ private fun ProfileAvatarCard(
             color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
     }
@@ -486,6 +492,7 @@ private fun AddProfileCard(
     animDelay: Int,
     enabled: Boolean,
     onClick: () -> Unit,
+    cardWidth: Dp = 150.dp,
 ) {
     val animAlpha = remember { Animatable(0f) }
     val animScale = remember { Animatable(0.85f) }
@@ -505,7 +512,7 @@ private fun AddProfileCard(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(150.dp)
+            .width(cardWidth)
             .graphicsLayer {
                 alpha = animAlpha.value
                 scaleX = animScale.value * pressScale

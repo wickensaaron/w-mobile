@@ -38,6 +38,9 @@ internal data class PlayerScreenArgs(
     val torrentTrackers: List<String>,
     val initialPositionMs: Long,
     val initialProgressFraction: Float?,
+    val recordingProgrammeStartOffsetMs: Long? = null,
     val contentLanguage: String? = null,
+    val requireEnglishAudio: Boolean = false,
     val coreSelectionReference: String? = null,
+    val onReturnToLive: (() -> Unit)? = null,
 )

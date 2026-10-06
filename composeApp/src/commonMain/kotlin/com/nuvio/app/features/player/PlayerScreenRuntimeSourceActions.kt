@@ -233,6 +233,7 @@ internal fun PlayerScreenRuntime.switchToP2pEpisodeStream(
 }
 
 internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem, coreRefreshed: Boolean = false) {
+    requireEnglishAudio = false
     if (!coreRefreshed && resolveCoreForPlayer(stream) { switchToSource(it, coreRefreshed = true) }) return
     if (
         resolveDebridForPlayer(
@@ -295,18 +296,18 @@ internal fun PlayerScreenRuntime.switchToSource(stream: StreamItem, coreRefreshe
 }
 
 internal fun PlayerScreenRuntime.switchToEpisodeStream(
-    stream: StreamItem, episode: MetaVideo, coreRefreshed: Boolean = false, isRequestCurrent: () -> Boolean = { true },
+    stream: StreamItem, episode: MetaVideo, coreRefreshed: Boolean = false, isRequestCurrent: () -> Boolean = { true }, requireEnglish: Boolean = false,
 ) {
     if (!isRequestCurrent()) return
     if (!coreRefreshed && resolveCoreForPlayer(stream, isRequestCurrent) {
-        switchToEpisodeStream(it, episode, coreRefreshed = true, isRequestCurrent = isRequestCurrent)
+        switchToEpisodeStream(it, episode, coreRefreshed = true, isRequestCurrent = isRequestCurrent, requireEnglish = requireEnglish)
     }) return
     if (
         resolveDebridForPlayer(
             stream = stream,
             season = episode.season,
             episode = episode.episode,
-            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode, isRequestCurrent = isRequestCurrent) },
+            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode, isRequestCurrent = isRequestCurrent, requireEnglish = requireEnglish) },
             onStale = {
                 PlayerStreamsRepository.loadEpisodeStreams(
                     parentMetaId = parentMetaId,
@@ -334,6 +335,7 @@ internal fun PlayerScreenRuntime.switchToEpisodeStream(
         saveDirectStreamForReuse(stream, url, epVideoId, episode.season, episode.episode)
     }
     externalSubtitles = stream.externalSubtitles
+    requireEnglishAudio = requireEnglish
     activeSourceUrl = url
     activeSourceAudioUrl = null
     activeSourceHeaders = sanitizePlaybackHeaders(stream.behaviorHints.proxyHeaders?.request)
@@ -416,10 +418,15 @@ internal fun PlayerScreenRuntime.playNextEpisode(automatic: Boolean = false) {
         settings = playerSettingsUiState,
         currentStreamBingeGroup = currentStreamBingeGroup,
         onDownloadedEpisodeSelected = { item, episode ->
-            if (isCurrentRequest()) switchToDownloadedEpisode(item, episode)
+            if (isCurrentRequest()) {
+                switchToDownloadedEpisode(item, episode)
+                requireEnglishAudio = com.nuvio.app.features.streams.balancedAutoPlayEnabled
+            }
         },
         onEpisodeStreamSelected = { stream, episode ->
-            if (isCurrentRequest()) switchToEpisodeStream(stream, episode, isRequestCurrent = ::isCurrentRequest)
+            if (isCurrentRequest()) switchToEpisodeStream(stream, episode,
+                coreRefreshed = com.nuvio.app.features.streams.balancedAutoPlayEnabled && stream.isWCoreStream,
+                isRequestCurrent = ::isCurrentRequest, requireEnglish = com.nuvio.app.features.streams.balancedAutoPlayEnabled)
         },
         onManualSelectionRequired = { nextVideo ->
             if (isCurrentRequest()) {
@@ -449,6 +456,7 @@ internal fun PlayerScreenRuntime.playNextEpisode(automatic: Boolean = false) {
 }
 
 internal fun PlayerScreenRuntime.openSourcesPanel() {
+    if (isManagedLiveTvPlayback(activeProviderAddonId)) return
     val vid = activeVideoId ?: return
     PlayerStreamsRepository.loadSources(
         parentMetaId = parentMetaId,

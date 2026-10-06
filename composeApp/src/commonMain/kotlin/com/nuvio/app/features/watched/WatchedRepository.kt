@@ -164,6 +164,8 @@ object WatchedRepository {
     internal var syncAdapter: WatchedSyncAdapter = SupabaseWatchedSyncAdapter
     private var extraKeysObserverJob: Job? = null
 
+    internal fun isLoadedForProfile(profileId: Int): Boolean =
+        ProfileRepository.activeProfileId == profileId && hasLoaded && currentProfileId == profileId && loadedSyncIdentity == currentNuvioSyncIdentity()
     fun ensureLoaded() {
         ensureTrackingProvidersRegistered()
         TrackingProviderRegistry.ensureLoaded()

@@ -16,6 +16,10 @@ import com.nuvio.app.features.streams.W_CORE_ADDON_ID
 import com.nuvio.app.features.streams.StreamAutoPlayMode
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamAutoPlaySource
+import com.nuvio.app.features.streams.BalancedAutoPlayPolicy
+import com.nuvio.app.features.streams.balancedAutoPlayEnabled
+import com.nuvio.app.features.streams.verifyBalancedAutoPlay
+import com.nuvio.app.features.streams.WCorePlaybackSources
 import com.nuvio.app.features.streams.StreamItem
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -76,6 +80,19 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
         videoId = nextVideo.id,
     )
     if (downloadedNextEpisode != null) {
+        if (balancedAutoPlayEnabled) {
+            previousJob?.cancel()
+            return launch {
+                val uri = DownloadsRepository.playableLocalFileUri(downloadedNextEpisode)
+                val candidate = StreamItem(url = uri, addonName = "Downloads", addonId = "download")
+                if (uri != null && verifyBalancedAutoPlay(candidate)) {
+                    onDownloadedEpisodeSelected(downloadedNextEpisode, nextVideo)
+                } else {
+                    NuvioToastController.show(BalancedAutoPlayPolicy.FALLBACK_MESSAGE)
+                    onManualSelectionRequired(nextVideo)
+                }
+            }
+        }
         onDownloadedEpisodeSelected(downloadedNextEpisode, nextVideo)
         return null
     }
@@ -305,7 +322,9 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             }
         }
 
-        val selected = selectedStream?.let { stream ->
+        // AUTO resolves candidates in the inspection loop so a failed first link
+        // cannot clear the remaining source list before retries.
+        var selected = if (balancedAutoPlayEnabled) null else selectedStream?.let { stream ->
             when (val result = DirectDebridPlaybackResolver.resolveToPlayableStream(stream, nextVideo.season, nextVideo.episode)) {
                 is DirectDebridPlayableResult.Success -> result.stream
                 else -> {
@@ -321,6 +340,35 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                     null
                 }
             }
+        }
+        if (balancedAutoPlayEnabled) {
+            val first = selectedStream
+            val ranked = StreamAutoPlaySelector.evaluateAutoPlayStream(
+                streams = PlayerStreamsRepository.episodeStreamsState.value.groups.flatMap { it.streams },
+                mode = effectiveMode,
+                regexPattern = effectiveRegex,
+                source = effectiveSource,
+                installedAddonNames = installedAddonNames,
+                selectedAddons = effectiveSelectedAddons,
+                selectedPlugins = effectiveSelectedPlugins,
+                preferredBingeGroup = preferredBingeGroup,
+                preferBingeGroupInSelection = settings.streamAutoPlayPreferBingeGroup,
+                bingeGroupOnly = bingeGroupOnlyManualMode,
+                debridEnabled = debridSettings.canResolvePlayableLinks,
+                activeResolverProviderId = debridSettings.activeResolverProviderId,
+            ).readyStreams
+            val candidates = listOfNotNull(first) + ranked.filterNot { it == first }
+            val inspected = mutableSetOf<String>()
+            selected = null
+            for (candidate in candidates.take(BalancedAutoPlayPolicy.MAX_ATTEMPTS)) {
+                val resolved = if (candidate.isWCoreStream) WCorePlaybackSources.refreshSelected(candidate)
+                    else (DirectDebridPlaybackResolver.resolveToPlayableStream(candidate, nextVideo.season, nextVideo.episode)
+                        as? DirectDebridPlayableResult.Success)?.stream
+                val url = resolved?.playableDirectUrl ?: continue
+                if (!inspected.add(url)) continue
+                if (verifyBalancedAutoPlay(resolved)) { selected = resolved; break }
+            }
+            if (selected == null) NuvioToastController.show(BalancedAutoPlayPolicy.FALLBACK_MESSAGE)
         }
         onSearchingChanged(false)
         if (selected != null) {

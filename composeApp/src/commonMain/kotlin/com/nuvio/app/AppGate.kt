@@ -16,12 +16,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.auth.DeviceSessionRegistration
@@ -192,6 +194,8 @@ internal fun AppGate(
         }
     }
 
+    val profileSwitchScope = rememberCoroutineScope()
+
     LaunchedEffect(nativeProfileSwitcherController, appGateController, renderMainContent) {
         if (renderMainContent || appGateController == null) return@LaunchedEffect
         nativeProfileSwitcherController?.requestedManageProfiles?.collect {
@@ -211,7 +215,11 @@ internal fun AppGate(
             profileSelectionTransitionActive = true
             skipProfileSelectionEnterAnimation = true
             appGateController.beginContentReload()
-            ProfileRepository.selectProfile(profile.profileIndex)
+            if (!ProfileRepository.switchToProfile(profile.profileIndex)) {
+                profileSelectionLoading = false
+                profileSelectionTransitionActive = false
+                return@collect
+            }
             SyncManager.pullAllForProfile(profile.profileIndex)
             gateScreen = AppGateScreen.Main.name
             onActivate?.invoke(AppScreenTab.Home)
@@ -251,17 +259,22 @@ internal fun AppGate(
             ?.takeUnless { it.pinEnabled }
     }
 
-    fun selectProfile(profile: NuvioProfile, sync: Boolean) {
+    suspend fun selectProfile(profile: NuvioProfile, sync: Boolean): Boolean {
         if (!renderMainContent) {
             appGateController?.beginContentReload()
         }
-        ProfileRepository.selectProfile(profile.profileIndex)
+        if (!ProfileRepository.switchToProfile(profile.profileIndex)) {
+            profileSelectionLoading = false
+            profileSelectionTransitionActive = false
+            return false
+        }
         if (sync) {
             SyncManager.pullAllForProfile(profile.profileIndex)
         }
+        return true
     }
 
-    fun enterProfileGate(profiles: List<NuvioProfile>, syncOnEnter: Boolean) {
+    suspend fun enterProfileGate(profiles: List<NuvioProfile>, syncOnEnter: Boolean) {
         profileSelectionLoading = false
         profileSelectionTransitionActive = false
         if (profiles.isEmpty()) {
@@ -271,7 +284,7 @@ internal fun AppGate(
         }
 
         rememberedStartupProfile(profiles)?.let { profile ->
-            selectProfile(profile, sync = syncOnEnter)
+            if (!selectProfile(profile, sync = syncOnEnter)) return
             gateScreen = AppGateScreen.Main.name
             autoSkipProfileSelection = false
             return
@@ -284,7 +297,7 @@ internal fun AppGate(
                 gateScreen = AppGateScreen.ProfileSelection.name
                 return
             }
-            selectProfile(onlyProfile, sync = syncOnEnter)
+            if (!selectProfile(onlyProfile, sync = syncOnEnter)) return
             gateScreen = AppGateScreen.Main.name
             autoSkipProfileSelection = false
         } else {
@@ -352,7 +365,7 @@ internal fun AppGate(
             gateScreen == AppGateScreen.ProfileSelection.name
         ) {
             rememberedStartupProfile(profileState.profiles)?.let { profile ->
-                selectProfile(profile, sync = true)
+                if (!selectProfile(profile, sync = true)) return@LaunchedEffect
                 gateScreen = AppGateScreen.Main.name
                 autoSkipProfileSelection = false
                 return@LaunchedEffect
@@ -363,7 +376,7 @@ internal fun AppGate(
             val onlyProfile = profileState.profiles.first()
             if (onlyProfile.pinEnabled) return@LaunchedEffect
 
-            selectProfile(onlyProfile, sync = true)
+            if (!selectProfile(onlyProfile, sync = true)) return@LaunchedEffect
             gateScreen = AppGateScreen.Main.name
             autoSkipProfileSelection = false
         }
@@ -534,13 +547,19 @@ internal fun AppGate(
                             profileSelectionLoading = true
                             profileSelectionTransitionActive = true
                             skipProfileSelectionEnterAnimation = false
-                            selectProfile(
-                                profile = profile,
-                                sync = authState is AuthState.Authenticated,
-                            )
-                            gateScreen = AppGateScreen.Main.name
-                            if (!renderMainContent) {
-                                onActivate?.invoke(AppScreenTab.Home)
+                            profileSwitchScope.launch {
+                                if (!selectProfile(
+                                        profile = profile,
+                                        sync = authState is AuthState.Authenticated,
+                                    )) {
+                                    profileSelectionLoading = false
+                                    profileSelectionTransitionActive = false
+                                    return@launch
+                                }
+                                gateScreen = AppGateScreen.Main.name
+                                if (!renderMainContent) {
+                                    onActivate?.invoke(AppScreenTab.Home)
+                                }
                             }
                         }
                     },

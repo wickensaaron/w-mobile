@@ -7,6 +7,8 @@ import platform.UIKit.UIViewController
  * Swift side implements this and registers a factory at app startup.
  */
 interface NuvioPlayerBridge {
+    /** Silent metadata-only inspection. Returns the tagged English audio track ID, or -1/-2. */
+    fun probeAutoPlay(url: String, headersJson: String?, maxBytes: Long, timeoutMs: Long): Int
     fun createPlayerViewController(): UIViewController
     fun loadFile(url: String)
     fun loadFileWithAudio(
