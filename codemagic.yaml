@@ -6,8 +6,6 @@ workflows:
     environment:
       xcode: "26.6"
       java: 17
-      groups:
-        - w_media_public
       vars:
         IOS_CONFIGURATION: Debug
         NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
