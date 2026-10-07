@@ -92,7 +92,7 @@ data class LiveTvUiState(
     val hasGuideSources: Boolean get() = guideUrl.isNotBlank() || accountGuideSourceCount > 0
 
     val showInNavigation: Boolean
-        get() = hasPlaylist && isNavigationEnabled
+        get() = isNavigationEnabled
 }
 
 internal fun LiveTvUiState.programmesFor(channel: LiveTvChannel): List<LiveTvProgramme> {

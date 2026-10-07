@@ -4,6 +4,7 @@ import co.touchlab.kermit.Logger
 import com.nuvio.app.core.auth.AuthRepository
 import com.nuvio.app.core.auth.AuthState
 import com.nuvio.app.core.network.SupabaseProvider
+import com.nuvio.app.core.network.WCoreConnectionRepository
 import com.nuvio.app.features.debrid.DebridProviders
 import com.nuvio.app.features.debrid.DebridSettings
 import com.nuvio.app.features.debrid.DebridSettingsRepository
@@ -40,6 +41,13 @@ private const val PROVIDER_CREDENTIAL_PUSH_DEBOUNCE_MS = 500L
 private data class ProviderCredentialScope(
     val userId: String,
     val profileId: Int,
+)
+
+private data class ProviderCredentialInputs(
+    val debrid: DebridSettings,
+    val tmdb: TmdbSettings,
+    val mdbList: MdbListSettings,
+    val player: PlayerSettingsUiState,
 )
 
 object ProviderCredentialSync {
@@ -151,18 +159,24 @@ object ProviderCredentialSync {
     }
 
     private fun observeCredentialSnapshots() = combine(
-        ProfileRepository.state,
-        DebridSettingsRepository.uiState,
-        TmdbSettingsRepository.uiState,
-        MdbListSettingsRepository.uiState,
-        PlayerSettingsRepository.uiState,
-    ) { _, debrid, tmdb, mdbList, player ->
+        combine(
+            ProfileRepository.state,
+            DebridSettingsRepository.uiState,
+            TmdbSettingsRepository.uiState,
+            MdbListSettingsRepository.uiState,
+            PlayerSettingsRepository.uiState,
+        ) { _, debrid, tmdb, mdbList, player ->
+            ProviderCredentialInputs(debrid, tmdb, mdbList, player)
+        },
+        WCoreConnectionRepository.configuredOrigin,
+    ) { inputs, wCoreOrigin ->
         buildSnapshot(
             profileId = ProfileRepository.activeProfileId,
-            debrid = debrid,
-            tmdb = tmdb,
-            mdbList = mdbList,
-            player = player,
+            debrid = inputs.debrid,
+            tmdb = inputs.tmdb,
+            mdbList = inputs.mdbList,
+            player = inputs.player,
+            wCoreOrigin = wCoreOrigin,
         )
     }
 
@@ -174,6 +188,7 @@ object ProviderCredentialSync {
             tmdb = TmdbSettingsRepository.snapshot(),
             mdbList = MdbListSettingsRepository.snapshot(),
             player = PlayerSettingsRepository.uiState.value,
+            wCoreOrigin = WCoreConnectionRepository.configuredOrigin.value,
         )
         check(ProfileRepository.activeProfileId == profileId)
         return snapshot
@@ -185,6 +200,7 @@ object ProviderCredentialSync {
         tmdb: TmdbSettings,
         mdbList: MdbListSettings,
         player: PlayerSettingsUiState,
+        wCoreOrigin: String? = null,
     ): ProviderCredentialSnapshot = ProviderCredentialSnapshot(
         profileId = profileId,
         values = buildList {
@@ -204,6 +220,13 @@ object ProviderCredentialSync {
                     ProviderCredentialIds.ANIMESKIP,
                     PROVIDER_CLIENT_ID_FIELD,
                     player.animeSkipClientId.trim(),
+                ),
+            )
+            add(
+                ProviderCredentialValue(
+                    ProviderCredentialIds.WCORE,
+                    PROVIDER_ORIGIN_FIELD,
+                    wCoreOrigin.orEmpty().trim(),
                 ),
             )
             add(
@@ -240,6 +263,14 @@ object ProviderCredentialSync {
                 }
                 credential.provider == ProviderCredentialIds.INTRODB -> {
                     PlayerSettingsRepository.setIntroDbApiKey(credential.value)
+                }
+                credential.provider == ProviderCredentialIds.WCORE -> {
+                    val applied = if (credential.value.isBlank()) {
+                        WCoreConnectionRepository.useDefaultOrigin()
+                    } else {
+                        WCoreConnectionRepository.setCustomOrigin(credential.value)
+                    }
+                    check(applied) { "Invalid W Core origin received from account sync" }
                 }
             }
         }

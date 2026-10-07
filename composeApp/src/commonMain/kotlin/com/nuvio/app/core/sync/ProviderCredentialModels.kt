@@ -10,12 +10,14 @@ import kotlinx.serialization.json.put
 
 internal const val PROVIDER_API_KEY_FIELD = "api_key"
 internal const val PROVIDER_CLIENT_ID_FIELD = "client_id"
+internal const val PROVIDER_ORIGIN_FIELD = "origin"
 
 internal object ProviderCredentialIds {
     const val TMDB = "tmdb"
     const val MDBLIST = "mdblist"
     const val ANIMESKIP = "animeskip"
     const val INTRODB = "introdb"
+    const val WCORE = "wcore"
 
     fun debrid(providerId: String): String = "debrid:$providerId"
 }

@@ -28,6 +28,21 @@ class ProviderCredentialModelsTest {
     }
 
     @Test
+    fun `W Core origin is included in the account snapshot`() {
+        val snapshot = ProviderCredentialSync.buildSnapshot(
+            profileId = 1,
+            debrid = DebridSettings(),
+            tmdb = TmdbSettings(),
+            mdbList = MdbListSettings(),
+            player = PlayerSettingsUiState(),
+            wCoreOrigin = " https://core.example.com/ ",
+        )
+        val credential = snapshot.values.single { it.provider == ProviderCredentialIds.WCORE }
+
+        assertEquals(buildJsonObject { put("origin", "https://core.example.com/") }, credential.credentialJson())
+    }
+
+    @Test
     fun `remote TMDB override can be replaced and cleared`() {
         val local = credentialSnapshot(TmdbSettings(apiKey = "local-key"))
         val remote = listOf(

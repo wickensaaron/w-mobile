@@ -368,6 +368,9 @@ final class MPVPlayerViewController: UIViewController {
     private var recentPlaybackLogs: [String] = []
     private var activeRequestHeaders: [String: String] = [:]
     private var preferredAudioLanguages: [String] = []
+    private var subtitleDownloadTasks: [URLSessionDownloadTask] = []
+    private var cachedSubtitleFiles: [URL] = []
+    private var subtitleLoadGeneration = 0
 
     // Cached track lists
     var audioTracks: [TrackInfo] = []
@@ -685,6 +688,7 @@ final class MPVPlayerViewController: UIViewController {
 
     private func startLoad(_ request: PendingLoadRequest) {
         guard mpv != nil else { return }
+        resetExternalSubtitleFiles()
         layoutMetalLayer()
         clearPlaybackError()
         let sanitizedHeaders = sanitizeRequestHeaders(request.requestHeaders)
@@ -877,27 +881,88 @@ final class MPVPlayerViewController: UIViewController {
 
     func addSubtitleUrl(_ url: String) {
         guard mpv != nil else { return }
-        command("sub-add", args: [url, "select"])
+        cacheAndAddSubtitle(
+            PluginSubtitle(url: url, language: "Unknown", name: nil, headers: nil),
+            mode: "select"
+        )
     }
 
     private func addSubtitle(_ subtitle: PluginSubtitle, mode: String) {
         guard mpv != nil else { return }
-        let subtitleHeaders = sanitizeRequestHeaders(subtitle.headers ?? [:])
-        let previousHeaders = activeRequestHeaders
+        cacheAndAddSubtitle(subtitle, mode: mode)
+    }
 
-        if !subtitleHeaders.isEmpty {
-            applyRequestHeaders(previousHeaders.merging(subtitleHeaders) { _, subtitleValue in subtitleValue })
+    private func cacheAndAddSubtitle(_ subtitle: PluginSubtitle, mode: String) {
+        guard mpv != nil, let source = URL(string: subtitle.url) else { return }
+        guard let scheme = source.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            command(
+                "sub-add",
+                args: [subtitle.url, mode, subtitle.name ?? subtitle.language, subtitle.language],
+                checkForErrors: false
+            )
+            return
         }
 
-        command(
-            "sub-add",
-            args: [subtitle.url, mode, subtitle.name ?? subtitle.language, subtitle.language],
-            checkForErrors: false
-        )
-
-        if !subtitleHeaders.isEmpty {
-            applyRequestHeaders(previousHeaders)
+        let generation = subtitleLoadGeneration
+        var request = URLRequest(url: source, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        sanitizeRequestHeaders(subtitle.headers ?? [:]).forEach { key, value in
+            request.setValue(value, forHTTPHeaderField: key)
         }
+        let task = URLSession.shared.downloadTask(with: request) { [weak self] temporaryUrl, response, error in
+            guard let self, error == nil, let temporaryUrl,
+                  let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: temporaryUrl.path)
+            let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            guard byteCount > 0, byteCount <= 8 * 1024 * 1024 else { return }
+
+            let fileExtension = self.subtitleFileExtension(source: source, response: response)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NuvioSubtitles", isDirectory: true)
+            let destination = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension(fileExtension)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: temporaryUrl, to: destination)
+            } catch {
+                return
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.mpv != nil, self.subtitleLoadGeneration == generation else {
+                    try? FileManager.default.removeItem(at: destination)
+                    return
+                }
+                self.cachedSubtitleFiles.append(destination)
+                self.command(
+                    "sub-add",
+                    args: [destination.path, mode, subtitle.name ?? subtitle.language, subtitle.language],
+                    checkForErrors: false
+                )
+            }
+        }
+        subtitleDownloadTasks.append(task)
+        task.resume()
+    }
+
+    private func subtitleFileExtension(source: URL, response: URLResponse?) -> String {
+        let allowed = Set(["srt", "vtt", "ass", "ssa", "sub", "ttml", "dfxp"])
+        let sourceExtension = source.pathExtension.lowercased()
+        if allowed.contains(sourceExtension) { return sourceExtension }
+        let suggestedExtension = response?.suggestedFilename.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
+        if allowed.contains(suggestedExtension) { return suggestedExtension }
+        switch response?.mimeType?.lowercased() {
+        case "text/vtt": return "vtt"
+        case "text/x-ssa", "text/x-ass": return "ass"
+        case "application/x-subrip": return "srt"
+        case "application/ttml+xml": return "ttml"
+        default: return "srt"
+        }
+    }
+
+    private func resetExternalSubtitleFiles() {
+        subtitleLoadGeneration += 1
+        subtitleDownloadTasks.forEach { $0.cancel() }
+        subtitleDownloadTasks.removeAll(keepingCapacity: false)
+        cachedSubtitleFiles.forEach { try? FileManager.default.removeItem(at: $0) }
+        cachedSubtitleFiles.removeAll(keepingCapacity: false)
     }
 
     func removeExternalSubtitles() {
@@ -912,6 +977,7 @@ final class MPVPlayerViewController: UIViewController {
             }
         }
         setStringProperty("sid", "no")
+        resetExternalSubtitleFiles()
     }
 
     func removeExternalSubtitlesAndSelect(_ trackId: Int) {
@@ -930,6 +996,7 @@ final class MPVPlayerViewController: UIViewController {
         } else {
             setStringProperty("sid", "no")
         }
+        resetExternalSubtitleFiles()
     }
 
     func setSubtitleDelayMs(_ delayMs: Int) {
@@ -978,6 +1045,7 @@ final class MPVPlayerViewController: UIViewController {
         pendingSurfaceLayoutWorkItems.forEach { $0.cancel() }
         pendingSurfaceLayoutWorkItems.removeAll(keepingCapacity: false)
         pendingLoadRequest = nil
+        resetExternalSubtitleFiles()
         nowPlayingController.invalidate()
         clearPlaybackError()
         deactivateAudioSession()
