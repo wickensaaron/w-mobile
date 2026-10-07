@@ -52,10 +52,15 @@ private enum IOSBalancedAutoProbe {
         }.joined(separator: ",")
         if !fields.isEmpty && mpv_set_option_string(handle, "http-header-fields", fields) < 0 { return -1 }
         guard mpv_initialize(handle) >= 0 else { return -1 }
-        var args = ["loadfile", url, "replace"].map { UnsafePointer<CChar>(strdup($0)) }
-        args.append(nil)
-        defer { for ptr in args { if let ptr { free(UnsafeMutablePointer(mutating: ptr)) } } }
-        guard mpv_command(handle, &args) >= 0 else { return -1 }
+        let commandResult: Int32 = "loadfile".withCString { loadFile in
+            url.withCString { source in
+                "replace".withCString { replace in
+                    var args: [UnsafePointer<CChar>?] = [loadFile, source, replace, nil]
+                    return mpv_command(handle, &args)
+                }
+            }
+        }
+        guard commandResult >= 0 else { return -1 }
         let deadline = ProcessInfo.processInfo.systemUptime + Double(max(1, min(timeoutMs, 8_000))) / 1_000
         while ProcessInfo.processInfo.systemUptime < deadline {
             guard let event = mpv_wait_event(handle, 0.1) else { continue }
