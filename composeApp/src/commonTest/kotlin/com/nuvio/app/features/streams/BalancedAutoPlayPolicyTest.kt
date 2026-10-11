@@ -43,13 +43,16 @@ class BalancedAutoPlayPolicyTest {
     @Test fun structuredSizeTakesPrecedenceOverAmbiguousTitle() {
         assertEquals(8_000_000_000, BalancedAutoPlayPolicy.sizeBytes(source(8_000_000_000, name = "Season pack 70 GB")))
     }
+    @Test fun packTotalInTitleRequiresNativeFileSizeInspection() {
+        assertNull(BalancedAutoPlayPolicy.sizeBytes(source(name = "Season pack 70 GB")))
+    }
     @Test fun seasonPackFolderSizeIsNotVideoSize() {
         val stream = source().copy(clientResolve = StreamClientResolve(stream = StreamClientResolveStream(
             raw = StreamClientResolveRaw(folderSize = 80_000_000_000))))
         assertNull(BalancedAutoPlayPolicy.sizeBytes(stream))
     }
-    @Test fun foreignAudioExcludedAndDualAudioAllowed() {
-        assertFalse(BalancedAutoPlayPolicy.isEligible(source(languages = listOf("fr", "de"))))
+    @Test fun catalogueLanguageHintsDoNotOverrideActualAudioInspection() {
+        assertTrue(BalancedAutoPlayPolicy.isEligible(source(languages = listOf("fr", "de"))))
         assertTrue(BalancedAutoPlayPolicy.isEligible(source(languages = listOf("fr", "eng"))))
     }
     @Test fun unknownAudioRequiresInspectionRatherThanInventedEnglish() {
@@ -60,11 +63,10 @@ class BalancedAutoPlayPolicyTest {
         assertTrue(BalancedAutoPlayPolicy.isEnglish("English"))
     }
     @Test fun firstAndRegexModesCannotBypassRequirements() {
-        val foreign = source(7_000_000_000, listOf("de"))
         val large = source(40_000_000_000, listOf("en"))
         val eligible = source(9_000_000_000, listOf("en"))
         for (mode in listOf(StreamAutoPlayMode.FIRST_STREAM, StreamAutoPlayMode.REGEX_MATCH)) {
-            assertEquals(eligible, choose(listOf(foreign, large, eligible), mode).stream)
+            assertEquals(eligible, choose(listOf(large, eligible), mode).stream)
         }
     }
     @Test fun bingeGroupCannotBypassSizeCeiling() {
@@ -73,7 +75,7 @@ class BalancedAutoPlayPolicyTest {
         assertEquals(small, choose(listOf(large, small), binge = "same").stream)
     }
     @Test fun noEligibleSourceReturnsPicker() {
-        assertNull(choose(listOf(source(40_000_000_000), source(languages = listOf("de")))).stream)
+        assertNull(choose(listOf(source(40_000_000_000), source(40_000_000_001))).stream)
     }
     @Test fun manualModeDoesNotAutoSelect() {
         assertNull(choose(listOf(source(8_000_000_000)), StreamAutoPlayMode.MANUAL).stream)

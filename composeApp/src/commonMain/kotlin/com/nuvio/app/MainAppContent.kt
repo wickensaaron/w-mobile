@@ -666,6 +666,7 @@ internal fun MainAppContent(
                         if (syncProfileId != null) {
                             SyncManager.startPeriodicNuvioSyncPull(syncProfileId)
                             SyncManager.requestForegroundPull(syncProfileId)
+                            LiveTvRepository.refreshAccountSources()
                         } else {
                             SyncManager.stopPeriodicNuvioSyncPull()
                         }

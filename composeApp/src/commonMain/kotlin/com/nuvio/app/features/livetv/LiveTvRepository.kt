@@ -140,6 +140,17 @@ object LiveTvRepository {
         if (owner != null) restoreAccountSources()
     }
 
+    /** Refresh sources after returning to the app, without restarting an initial account import. */
+    fun refreshAccountSources() {
+        val alreadyLoaded = loadedProfileId == ProfileRepository.activeProfileId &&
+            loadedAccountScope == currentLiveTvAccountScope() &&
+            loadedConfiguration == ServerConfigurationRepository.active.value
+        ensureLoaded()
+        if (alreadyLoaded && loadedAccountScope != null && accountImportJob?.isActive != true) {
+            restoreAccountSources()
+        }
+    }
+
     /** One-way pull only. Manual mobile sources are kept in their separate local lane. */
     fun restoreAccountSources() {
         val owner = loadedAccountScope ?: return

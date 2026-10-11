@@ -3,6 +3,7 @@ package com.nuvio.app.features.livetv
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -50,6 +51,22 @@ internal fun recordingStatusLabel(status: String): String = when (status) {
     else -> status.replaceFirstChar { it.uppercase() }
 }
 
+private fun recordingSection(status: String): String = when (status) {
+    "recording", "resolving" -> "Recording now"
+    "ready" -> "Ready to watch"
+    "scheduled" -> "Coming up"
+    "failed" -> "Needs attention"
+    else -> "Past requests"
+}
+
+private fun recordingSectionOrder(status: String): Int = when (status) {
+    "recording", "resolving" -> 0
+    "ready" -> 1
+    "scheduled" -> 2
+    "failed" -> 3
+    else -> 4
+}
+
 @Composable
 private fun RecordingManager(profileId: Int, onClose: () -> Unit, onPlay: (LiveTvRecording, String) -> Unit) {
     val connection by WCoreConnectionRepository.status.collectAsStateWithLifecycle()
@@ -63,6 +80,10 @@ private fun RecordingManager(profileId: Int, onClose: () -> Unit, onPlay: (LiveT
     var remove by remember { mutableStateOf<LiveTvRecording?>(null) }
     var removeRule by remember { mutableStateOf<CoreRecordingSeriesRule?>(null) }
     val scope = rememberCoroutineScope()
+    val visibleRecordings = recordings.filter { it.status != "deleted" }.sortedWith(
+        compareBy<LiveTvRecording> { recordingSectionOrder(it.status) }
+            .thenBy { if (it.status == "ready" || it.status == "failed") -it.startMs else it.startMs },
+    )
     suspend fun refresh() {
         val owner = RecordingRequestOwner(profileId)
         if (!owner.isCurrent()) { recordings = emptyList(); rules = emptyList(); loading = false; return }
@@ -101,7 +122,8 @@ private fun RecordingManager(profileId: Int, onClose: () -> Unit, onPlay: (LiveT
             Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp)) {
                 Text("Recordings", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.nuvio.colors.textPrimary,
                     modifier = Modifier.padding(top = 12.dp))
-                Text("Your W Core recordings", color = MaterialTheme.nuvio.colors.textSecondary)
+                Text("W Core saves live TV so you can watch it later, even after closing this iPhone.",
+                    color = MaterialTheme.nuvio.colors.textSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = onClose, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Close") }
                     TextButton(onClick = { act { } }, enabled = !busy && connection == WCoreConnectionStatus.Connected,
@@ -113,20 +135,15 @@ private fun RecordingManager(profileId: Int, onClose: () -> Unit, onPlay: (LiveT
                     error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
                     seriesError?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
                     notice?.let { item { Text(it, color = MaterialTheme.nuvio.colors.textSecondary) } }
-                    if (!loading && recordings.isEmpty() && rules.isEmpty() && error == null && connection == WCoreConnectionStatus.Connected) {
-                        item { Text("No recordings yet. Choose a programme or Record now in the TV guide.", color = MaterialTheme.nuvio.colors.textSecondary) }
+                    if (!loading && visibleRecordings.isEmpty() && rules.isEmpty() && error == null && seriesError == null && connection == WCoreConnectionStatus.Connected) {
+                        item { Text("Nothing recorded yet. Choose a programme in the TV guide to save it for later.", color = MaterialTheme.nuvio.colors.textSecondary) }
                     }
-                    items(rules, key = { "rule:${it.id}" }) { rule ->
-                        OutlinedCard(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(rule.programmeTitle, style = MaterialTheme.typography.titleMedium)
-                                Text("Series link · ${rule.channelName}")
-                                rule.lastError?.let { Text("A future airing needs attention. Check the guide or recording list.", color = MaterialTheme.colorScheme.error) }
-                                TextButton(onClick = { removeRule = rule }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Turn off series link") }
-                            }
+                    itemsIndexed(visibleRecordings, key = { _, recording -> recording.id }) { index, recording ->
+                        val section = recordingSection(recording.status)
+                        if (index == 0 || recordingSection(visibleRecordings[index - 1].status) != section) {
+                            Text(section, style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(top = if (index == 0) 8.dp else 14.dp))
                         }
-                    }
-                    items(recordings.filter { it.status != "deleted" }.sortedByDescending { it.startMs }, key = { it.id }) { recording ->
                         OutlinedCard(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(recording.seriesTitle ?: recording.title, style = MaterialTheme.typography.titleMedium)
@@ -150,6 +167,18 @@ private fun RecordingManager(profileId: Int, onClose: () -> Unit, onPlay: (LiveT
                                     act { LiveTvRecordingClient.cancel(profileId, recording.id); notice = "Stop requested. W Core will update the recording shortly." }
                                 }) { Text(if (recording.status == "recording") "Stop and save" else "Cancel recording") }
                                 TextButton(enabled = !busy, modifier = Modifier.heightIn(min = 48.dp), onClick = { remove = recording }) { Text("Remove recording", color = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                    }
+                    if (rules.isNotEmpty()) item { Text("Series links", style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(top = 14.dp)) }
+                    items(rules, key = { "rule:${it.id}" }) { rule ->
+                        OutlinedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(rule.programmeTitle, style = MaterialTheme.typography.titleMedium)
+                                Text("Future airings · ${rule.channelName}")
+                                rule.lastError?.let { Text("A future airing needs attention. Check the guide or recording list.", color = MaterialTheme.colorScheme.error) }
+                                TextButton(onClick = { removeRule = rule }, enabled = !busy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Turn off series link") }
                             }
                         }
                     }

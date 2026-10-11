@@ -20,7 +20,7 @@ internal actual suspend fun verifyBalancedAutoPlay(stream: StreamItem): Boolean 
         try {
             val headers = Json.encodeToString(sanitizePlaybackHeaders(stream.behaviorHints.proxyHeaders?.request))
             val trackId = runCatching {
-                bridge.probeAutoPlay(url, headers, BalancedAutoPlayPolicy.MAX_BYTES, 8_000)
+                bridge.probeAutoPlay(url, headers, BalancedAutoPlayPolicy.MAX_BYTES, 20_000)
             }.getOrDefault(-1)
             currentCoroutineContext().ensureActive()
             trackId >= 0

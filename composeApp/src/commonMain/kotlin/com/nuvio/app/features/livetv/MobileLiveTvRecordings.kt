@@ -50,6 +50,7 @@ internal fun MobileLiveTvRecordingSetup(profileId: Int, nowMs: Long,
     var recordThisChannelNow by remember(selection) { mutableStateOf(false) }
     var playbackStopped by remember(recordNowSelection) { mutableStateOf(false) }
     val activeSelection = selection ?: recordNowSelection
+    var showAdvanced by remember(activeSelection) { mutableStateOf(false) }
     val isRecordNow = recordNowSelection != null || recordThisChannelNow
     val submitted = result != null || seriesRule != null
     var coreProviders by remember(profileId, activeSelection) { mutableStateOf<List<CoreRecordingProvider>>(emptyList()) }
@@ -111,6 +112,13 @@ internal fun MobileLiveTvRecordingSetup(profileId: Int, nowMs: Long,
             }
         }
     }
+    LaunchedEffect(coreProviders, activeSelection) {
+        val sourceName = activeSelection?.first?.playlistName ?: return@LaunchedEffect
+        if (selectedCoreProviderId == null && coreProviders.size == 1 &&
+            coreProviders.single().name.equals(sourceName, ignoreCase = true)) {
+            selectedCoreProviderId = coreProviders.single().id
+        }
+    }
     LaunchedEffect(activeSelection, selectedCoreProviderId, sourceValid) {
         val channel = activeSelection?.first ?: return@LaunchedEffect
         val coreId = selectedCoreProviderId ?: return@LaunchedEffect
@@ -160,12 +168,14 @@ internal fun MobileLiveTvRecordingSetup(profileId: Int, nowMs: Long,
                 }) }
                 seriesRule?.let { Text("Series link is on for ${it.programmeTitle}. W Core will look for future airings on ${it.channelName}.") }
                 if (!submitted) {
-                    Text("Your IPTV source: ${activeSelection.first.playlistName ?: "Xtream"}")
-                    Text("Choose the matching W Core source. W Core checks channel and guide IDs, but the IPTV provider may still send the wrong programme.")
-                    coreProviders.forEach { provider ->
-                        TextButton(onClick = { selectedCoreProviderId = provider.id },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                            Text("${if (selectedCoreProviderId == provider.id) "●" else "○"} ${provider.name}")
+                    Text("W Core saves this recording on your server. Your iPhone can close after the request is confirmed.")
+                    Text("Recording source: ${selectedCoreProvider?.name ?: "Choose a matching W Core source"}")
+                    if (coreProviders.size != 1 || selectedCoreProviderId == null || showAdvanced) {
+                        coreProviders.forEach { provider ->
+                            TextButton(onClick = { selectedCoreProviderId = provider.id },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                                Text("${if (selectedCoreProviderId == provider.id) "●" else "○"} ${provider.name}")
+                            }
                         }
                     }
                     val selectedName = selectedCoreProvider?.name
@@ -173,7 +183,10 @@ internal fun MobileLiveTvRecordingSetup(profileId: Int, nowMs: Long,
                         !selectedName.equals(activeSelection.first.playlistName, ignoreCase = true)) {
                         Text("The source names differ. Confirm they use the same IPTV subscription before recording.")
                     }
-                    if (coreAlternatives.size > 1) {
+                    if (coreAlternatives.size > 1) TextButton(onClick = { showAdvanced = !showAdvanced }) {
+                        Text(if (showAdvanced) "Hide feed options" else "Feed options")
+                    }
+                    if (showAdvanced && coreAlternatives.size > 1) {
                         Text("Channel feed")
                         Text("If a feed shows a green or damaged picture, choose another listed feed before recording. Check the picture yourself; matching guide details cannot prove its video is correct.")
                         coreAlternatives.forEach { alternative ->
@@ -243,13 +256,16 @@ internal fun MobileLiveTvRecordingSetup(profileId: Int, nowMs: Long,
                             Text("Record this series")
                         }
                         if (recordSeries) Text("Record future guide airings with this exact title on this channel. Repeats may be included. You can turn off the series link in Library.")
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { showAdvanced = !showAdvanced }) {
+                            Text(if (showAdvanced) "Hide timing options" else "Timing options")
+                        }
+                        if (showAdvanced) Row(verticalAlignment = Alignment.CenterVertically) {
                             Switch(checked = protectSport, onCheckedChange = { protectSport = it }, enabled = !recordSeries,
                                 modifier = Modifier.testTag("record-protect-sport"))
                             Spacer(Modifier.width(10.dp))
                             Text("Protect live sport")
                         }
-                        if (!recordSeries) Text(if (protectSport) "Start 5 minutes early and allow 90 extra minutes. You can add 30 more minutes later."
+                        if (!recordSeries && showAdvanced) Text(if (protectSport) "Start 5 minutes early and allow 90 extra minutes. You can add 30 more minutes later."
                             else "Start 2 minutes early and allow 5 extra minutes.")
                         Text("If your IPTV account allows one connection, stop watching it before this recording starts.")
                     }

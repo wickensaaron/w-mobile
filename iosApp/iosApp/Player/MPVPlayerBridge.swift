@@ -61,7 +61,7 @@ private enum IOSBalancedAutoProbe {
             }
         }
         guard commandResult >= 0 else { return -1 }
-        let deadline = ProcessInfo.processInfo.systemUptime + Double(max(1, min(timeoutMs, 8_000))) / 1_000
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(max(1, min(timeoutMs, 20_000))) / 1_000
         while ProcessInfo.processInfo.systemUptime < deadline {
             guard let event = mpv_wait_event(handle, 0.1) else { continue }
             switch event.pointee.event_id {

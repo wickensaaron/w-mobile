@@ -369,7 +369,6 @@ internal fun PlayerScreenRuntime.persistPlaybackProgressTick() {
     WatchProgressRepository.upsertPlaybackProgress(
         session = playbackSession,
         snapshot = playbackSnapshot,
-        syncRemote = false,
     )
 }
 
