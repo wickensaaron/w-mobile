@@ -594,7 +594,7 @@ internal fun MainAppContent(
                     ?: ProfileRepository.activeProfileId
                 val authenticatedState = authState as? AuthState.Authenticated
                 if (authenticatedState != null && !authenticatedState.isAnonymous) {
-                    SyncManager.requestForegroundPull(profileId = profileId)
+                    SyncManager.requestForegroundPull(profileId = profileId, force = true)
                     watchSourceReconnectPending = false
                 } else {
                     val result = WatchProgressSourceCoordinator.refreshActiveSource(
@@ -665,7 +665,7 @@ internal fun MainAppContent(
                         MemberAccessRepository.refreshIfStale()
                         if (syncProfileId != null) {
                             SyncManager.startPeriodicNuvioSyncPull(syncProfileId)
-                            SyncManager.requestForegroundPull(syncProfileId)
+                            SyncManager.requestForegroundPull(syncProfileId, force = true)
                             LiveTvRepository.refreshAccountSources()
                         } else {
                             SyncManager.stopPeriodicNuvioSyncPull()

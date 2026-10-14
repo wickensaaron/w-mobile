@@ -26,14 +26,16 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-private const val FOREGROUND_PULL_DELAY_MS = 2500L
+private const val FOREGROUND_PULL_DELAY_MS = 0L
+private const val FOREGROUND_ACTIVITY_PULL_MIN_INTERVAL_MS = 1_000L
 private const val FULL_PULL_MIN_INTERVAL_MS = 10_000L
-private const val PERIODIC_NUVIO_SYNC_PULL_INTERVAL_MS = 15 * 60_000L
+internal const val PERIODIC_NUVIO_SYNC_PULL_INTERVAL_MS = 15_000L
 
 internal enum class ProfileSyncStep {
     Addons,
@@ -261,9 +263,46 @@ internal class ProfileSyncRequestGate {
     }
 }
 
+/** Activity must remain available while optional settings/addon requests are waiting. */
+internal class ProfileSyncRequestCoordinator {
+    private val full = ProfileSyncRequestGate()
+    private val activity = ProfileSyncRequestGate()
+
+    fun launch(
+        scope: CoroutineScope,
+        profileId: Int,
+        kind: ProfileSyncRequestKind = ProfileSyncRequestKind.Full,
+        block: suspend () -> Unit,
+    ): ProfileSyncRequestResult = when (kind) {
+        ProfileSyncRequestKind.Full -> full.launch(scope, profileId, kind, block)
+        ProfileSyncRequestKind.Activity -> activity.launch(scope, profileId, kind, block)
+    }
+
+    fun cancel() {
+        full.cancel()
+        activity.cancel()
+    }
+}
+
+internal suspend fun runPeriodicProfileActivitySync(
+    onFailure: (Throwable) -> Unit = {},
+    refresh: suspend () -> Unit,
+) {
+    while (currentCoroutineContext().isActive) {
+        delay(PERIODIC_NUVIO_SYNC_PULL_INTERVAL_MS)
+        try {
+            refresh()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            onFailure(error)
+        }
+    }
+}
+
 object SyncManager {
     private val log = Logger.withTag("SyncManager")
-    private val syncRequestGate = ProfileSyncRequestGate()
+    private val syncRequestGate = ProfileSyncRequestCoordinator()
     private val accountScopeLock = SynchronizedObject()
     private var accountScopeJob: Job = SupervisorJob()
     private var accountScope = CoroutineScope(accountScopeJob + Dispatchers.Default)
@@ -273,6 +312,7 @@ object SyncManager {
     private var periodicNuvioSyncPullJob: Job? = null
     private var periodicNuvioSyncProfileId: Int? = null
     private var fullPullFreshness = ProfilePullFreshness()
+    private var activityPullFreshness = ProfilePullFreshness()
 
     private val profileSyncOperations = ProfileSyncOperations(
         pullAddons = { profileId -> AddonRepository.pullFromServer(profileId) },
@@ -302,6 +342,7 @@ object SyncManager {
     )
 
     fun pullAllForProfile(profileId: Int) {
+        startActivityProfilePull(profileId = profileId, reason = "requested")
         startFullProfilePull(profileId = profileId, reason = "requested")
     }
 
@@ -319,6 +360,7 @@ object SyncManager {
                 foregroundPullJob = null
                 foregroundPullProfileId = null
                 fullPullFreshness = ProfilePullFreshness()
+                activityPullFreshness = ProfilePullFreshness()
             }
         }
         foregroundJob?.cancel()
@@ -333,7 +375,7 @@ object SyncManager {
         val authState = AuthRepository.state.value
         if (authState !is AuthState.Authenticated || authState.isAnonymous) return
 
-        if (!force && hasRecentFullPull(profileId)) {
+        if (!force && hasRecentActivityPull(profileId)) {
             return
         }
         lateinit var requestJob: Job
@@ -353,9 +395,9 @@ object SyncManager {
                     if (!force) {
                         delay(FOREGROUND_PULL_DELAY_MS)
                     }
-                    if (!force && hasRecentFullPull(profileId)) return@launch
+                    if (!force && hasRecentActivityPull(profileId)) return@launch
                     if (ProfileRepository.activeProfileId != profileId) return@launch
-                    startFullProfilePull(profileId = profileId, reason = "foreground", force = force)
+                    startActivityProfilePull(profileId = profileId, reason = "foreground")
                 } finally {
                     synchronized(pullStateLock) {
                         if (foregroundPullJob === requestJob) {
@@ -441,6 +483,15 @@ object SyncManager {
             )
         }
 
+    private fun hasRecentActivityPull(profileId: Int): Boolean =
+        synchronized(pullStateLock) {
+            activityPullFreshness.isRecent(
+                profileId = profileId,
+                nowEpochMs = EpisodeReleaseDatePlatform.nowEpochMs(),
+                minIntervalMs = FOREGROUND_ACTIVITY_PULL_MIN_INTERVAL_MS,
+            )
+        }
+
     private fun startActivityProfilePull(
         profileId: Int,
         reason: String,
@@ -470,6 +521,13 @@ object SyncManager {
                     log.e(error) { "Activity sync step failed profile=$profileId step=$step" }
                 },
             )
+            synchronized(pullStateLock) {
+                activityPullFreshness = activityPullFreshness.recordIfSuccessful(
+                    profileId = profileId,
+                    completedAtEpochMs = EpisodeReleaseDatePlatform.nowEpochMs(),
+                    result = syncResult,
+                )
+            }
             if (!syncResult.succeeded) {
                 log.w {
                     "Activity sync incomplete profile=$profileId reason=$reason failedSteps=${syncResult.failedSteps}"
@@ -494,15 +552,14 @@ object SyncManager {
         stopPeriodicNuvioSyncPull()
         periodicNuvioSyncProfileId = profileId
         periodicNuvioSyncPullJob = accountScopeSnapshot().launch {
-            while (isActive) {
-                delay(PERIODIC_NUVIO_SYNC_PULL_INTERVAL_MS)
+            runPeriodicProfileActivitySync(onFailure = { error -> log.w(error) { "Periodic activity sync will retry" } }) {
 
                 val currentAuthState = AuthRepository.state.value
                 if (currentAuthState !is AuthState.Authenticated || currentAuthState.isAnonymous) {
-                    continue
+                    return@runPeriodicProfileActivitySync
                 }
                 if (ProfileRepository.activeProfileId != profileId) {
-                    continue
+                    return@runPeriodicProfileActivitySync
                 }
 
                 TrackingProviderRegistry.ensureLoaded()
@@ -519,7 +576,7 @@ object SyncManager {
                 ) == WatchProgressSource.NUVIO_SYNC
 
                 if (!shouldPullLibrary && !shouldPullWatchProgress) {
-                    continue
+                    return@runPeriodicProfileActivitySync
                 }
 
                 startActivityProfilePull(
