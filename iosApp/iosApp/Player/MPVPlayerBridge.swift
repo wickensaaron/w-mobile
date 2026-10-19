@@ -38,9 +38,15 @@ private enum IOSBalancedAutoProbe {
         guard !Thread.isMainThread, !url.isEmpty, maxBytes > 0, let handle = mpv_create() else { return -1 }
         defer { mpv_terminate_destroy(handle) }
         for (key, value) in [("vo", "null"), ("ao", "null"), ("pause", "yes"), ("idle", "yes"),
-                             ("config", "no"), ("load-scripts", "no"), ("ytdl", "no"),
+                             ("config", "no"),
                              ("network-timeout", "5"), ("msg-level", "all=no")] {
             guard mpv_set_option_string(handle, key, value) >= 0 else { return -1 }
+        }
+        // Script options are absent in MPVKit builds without Lua/JavaScript.
+        // Their absence must not reject every AUTO candidate before opening it.
+        for key in ["load-scripts", "ytdl"] {
+            let result = mpv_set_option_string(handle, key, "no")
+            guard result >= 0 || result == MPV_ERROR_OPTION_NOT_FOUND.rawValue else { return -1 }
         }
         let fields = headers.sorted { $0.key.lowercased() < $1.key.lowercased() }.compactMap { key, value -> String? in
             guard !key.isEmpty, key.lowercased() != "range",
@@ -371,6 +377,8 @@ final class MPVPlayerViewController: UIViewController {
     private var subtitleDownloadTasks: [URLSessionDownloadTask] = []
     private var cachedSubtitleFiles: [URL] = []
     private var subtitleLoadGeneration = 0
+    private var isFileReadyForSubtitles = false
+    private var pendingSubtitles: [(subtitle: PluginSubtitle, mode: String)] = []
 
     // Cached track lists
     var audioTracks: [TrackInfo] = []
@@ -689,6 +697,7 @@ final class MPVPlayerViewController: UIViewController {
     private func startLoad(_ request: PendingLoadRequest) {
         guard mpv != nil else { return }
         resetExternalSubtitleFiles()
+        isFileReadyForSubtitles = false
         layoutMetalLayer()
         clearPlaybackError()
         let sanitizedHeaders = sanitizeRequestHeaders(request.requestHeaders)
@@ -708,11 +717,7 @@ final class MPVPlayerViewController: UIViewController {
             }
         }
 
-        for subtitle in request.subtitles {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.addSubtitle(subtitle, mode: "auto")
-            }
-        }
+        pendingSubtitles = request.subtitles.map { (subtitle: $0, mode: "auto") }
     }
 
     private func isViewportReadyForPlayback(queuedAtUptime: TimeInterval) -> Bool {
@@ -881,6 +886,8 @@ final class MPVPlayerViewController: UIViewController {
 
     func addSubtitleUrl(_ url: String) {
         guard mpv != nil else { return }
+        // A later selection supersedes downloads and queued selections in flight.
+        removeExternalSubtitles()
         cacheAndAddSubtitle(
             PluginSubtitle(url: url, language: "Unknown", name: nil, headers: nil),
             mode: "select"
@@ -894,6 +901,10 @@ final class MPVPlayerViewController: UIViewController {
 
     private func cacheAndAddSubtitle(_ subtitle: PluginSubtitle, mode: String) {
         guard mpv != nil, let source = URL(string: subtitle.url) else { return }
+        guard isFileReadyForSubtitles else {
+            pendingSubtitles.append((subtitle: subtitle, mode: mode))
+            return
+        }
         guard let scheme = source.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             command(
                 "sub-add",
@@ -959,6 +970,7 @@ final class MPVPlayerViewController: UIViewController {
 
     private func resetExternalSubtitleFiles() {
         subtitleLoadGeneration += 1
+        pendingSubtitles.removeAll(keepingCapacity: false)
         subtitleDownloadTasks.forEach { $0.cancel() }
         subtitleDownloadTasks.removeAll(keepingCapacity: false)
         cachedSubtitleFiles.forEach { try? FileManager.default.removeItem(at: $0) }
@@ -1340,6 +1352,13 @@ final class MPVPlayerViewController: UIViewController {
                     DispatchQueue.main.async { self.updateState() }
                 case MPV_EVENT_FILE_LOADED:
                     DispatchQueue.main.async {
+                        guard self.mpv != nil else { return }
+                        self.isFileReadyForSubtitles = true
+                        let subtitles = self.pendingSubtitles
+                        self.pendingSubtitles.removeAll(keepingCapacity: false)
+                        for entry in subtitles {
+                            self.addSubtitle(entry.subtitle, mode: entry.mode)
+                        }
                         self.clearPlaybackError()
                         self.isPlayerLoading = false
                         self.updateState()

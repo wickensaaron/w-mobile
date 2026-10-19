@@ -38,8 +38,9 @@ internal fun AddonResource.isCompatibleSubtitleResource(type: String, videoId: S
         name.equals("subtitle", ignoreCase = true)
     if (!isSubtitleResource) return false
 
-    val requestType = if (type.equals("tv", ignoreCase = true)) "series" else type
-    val typeMatches = types.isEmpty() || types.any { it.equals(requestType, ignoreCase = true) }
+    fun canonical(value: String) = if (value.equals("tv", ignoreCase = true)) "series" else value.trim()
+    val requestType = canonical(type)
+    val typeMatches = types.isEmpty() || types.any { canonical(it).equals(requestType, ignoreCase = true) }
     if (!typeMatches) return false
 
     return idPrefixes.isEmpty() || idPrefixes.any { prefix -> videoId.startsWith(prefix) }

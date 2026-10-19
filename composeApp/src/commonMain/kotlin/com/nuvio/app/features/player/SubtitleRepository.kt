@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_player_no_subtitles_found
+import nuvio.composeapp.generated.resources.player_subtitles_no_compatible_addon
+import nuvio.composeapp.generated.resources.player_subtitles_search_failed
 import org.jetbrains.compose.resources.getString
 
 object SubtitleRepository {
@@ -40,12 +42,15 @@ object SubtitleRepository {
 
             val requests = addonSubtitleRequests(type, videoId)
             if (requests.isEmpty()) {
+                _error.value = getString(Res.string.player_subtitles_no_compatible_addon)
                 _isLoading.value = false
                 return@launch
             }
 
             _loadingProgress.value = SubtitleLoadingProgress(total = requests.size)
-            loadAddonSubtitles(requests) { request, subtitles ->
+            loadAddonSubtitles(requests, onFailed = {
+                _loadingProgress.update { progress -> progress?.copy(failed = progress.failed + 1) }
+            }) { request, subtitles ->
                 _addonSubtitles.update { it + subtitles }
                 _loadingProgress.update { progress ->
                     progress?.copy(completed = progress.completed + 1, addonName = request.addonName)
@@ -53,7 +58,8 @@ object SubtitleRepository {
             }
 
             if (_addonSubtitles.value.isEmpty()) {
-                _error.value = getString(Res.string.compose_player_no_subtitles_found)
+                _error.value = getString(if ((_loadingProgress.value?.failed ?: 0) > 0)
+                    Res.string.player_subtitles_search_failed else Res.string.compose_player_no_subtitles_found)
             }
             _isLoading.value = false
         }
@@ -72,4 +78,5 @@ internal data class SubtitleLoadingProgress(
     val total: Int,
     val completed: Int = 0,
     val addonName: String? = null,
+    val failed: Int = 0,
 )

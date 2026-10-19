@@ -59,6 +59,7 @@ import nuvio.composeapp.generated.resources.compose_player_subtitles
 import nuvio.composeapp.generated.resources.settings_playback_option_forced
 import nuvio.composeapp.generated.resources.subtitle_language_unknown
 import org.jetbrains.compose.resources.stringResource
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
 fun SubtitleModal(
@@ -86,6 +87,7 @@ fun SubtitleModal(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val subtitleSearchError by SubtitleRepository.error.collectAsStateWithLifecycle()
     val effectiveSelectedAddonSubtitle = selectedAddonSubtitle
         ?: addonSubtitles.findSelectedAddon(selectedAddonSubtitleId)
     val playbackLanguageKey = selectedSubtitleLanguageKey(
@@ -225,6 +227,11 @@ fun SubtitleModal(
                         title = stringResource(Res.string.compose_player_subtitles),
                         width = 300.dp,
                     ) {
+                        if (!isLoadingAddonSubtitles && addonSubtitles.isEmpty()) {
+                            subtitleSearchError?.let { message ->
+                                SubtitleRailEmptyState(text = message, onClick = onFetchAddonSubtitles)
+                            }
+                        }
                         when {
                             options.isEmpty() -> {
                                 when (

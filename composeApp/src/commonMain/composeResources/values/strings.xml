@@ -1424,6 +1424,8 @@
     <string name="player_skip_outro">Skip Outro</string>
     <string name="player_skip_recap">Skip Recap</string>
     <string name="compose_player_no_subtitles_found">No subtitles found</string>
+    <string name="player_subtitles_no_compatible_addon">No enabled subtitle add-on supports this title. Check Add-ons, then tap to retry.</string>
+    <string name="player_subtitles_search_failed">Subtitle search failed. Check your subtitle add-ons, then tap to retry.</string>
     <string name="lang_afrikaans">Afrikaans</string>
     <string name="lang_albanian">Albanian</string>
     <string name="lang_amharic">Amharic</string>
