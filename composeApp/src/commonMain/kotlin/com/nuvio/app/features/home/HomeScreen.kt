@@ -571,7 +571,9 @@ fun HomeScreen(
         continueWatchingPreferences.sortMode,
     ) {
         splitUpcomingItems(
-            items = shuffledContinueWatchingItems,
+            items = shuffledContinueWatchingItems.filterNot {
+                excludeLiveOrRecordingFromHome(it.parentMetaType, it.parentMetaId, it.videoId)
+            },
             mode = continueWatchingPreferences.sortMode,
         )
     }
