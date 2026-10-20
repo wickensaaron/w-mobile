@@ -10,17 +10,16 @@ import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.features.addons.AddonManifest
 import com.nuvio.app.features.addons.AddonRepository
 import com.nuvio.app.features.addons.ManagedAddon
+import com.nuvio.app.features.addons.supportsResource
 import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.plugins.PluginsUiState
+import com.nuvio.app.features.servers.ServerRepository
+import com.nuvio.app.features.servers.ServerStreams
 
 internal fun AddonManifest.supportsStream(type: String, videoId: String): Boolean =
-    resources.any { resource ->
-        resource.name == "stream" &&
-            resource.types.contains(type) &&
-            (resource.idPrefixes.isEmpty() || resource.idPrefixes.any { videoId.startsWith(it) })
-    }
+    supportsResource("stream", type, videoId)
 
 internal fun hasCompatiblePlaybackSource(
     addons: List<ManagedAddon>,
@@ -36,7 +35,8 @@ internal class PlaybackAvailability(
 ) {
     fun canStream(type: String, videoId: String): Boolean =
         WCoreNativeLibrary.canPlay(videoId) || hasCompatiblePlaybackSource(addons, plugins, type, videoId) ||
-            MetaDetailsRepository.findEmbeddedStreams(videoId).isNotEmpty()
+            MetaDetailsRepository.findEmbeddedStreams(videoId).isNotEmpty() ||
+            ServerStreams.canServe(type, videoId)
 
     fun canPlay(
         type: String,
@@ -84,7 +84,11 @@ internal fun rememberPlaybackAvailability(): PlaybackAvailability {
         DownloadsRepository.ensureLoaded()
         DownloadsRepository.uiState
     }.collectAsStateWithLifecycle()
-    return remember(addons, plugins, downloads, coreItems, coreStatus) {
+    val servers by remember {
+        ServerRepository.ensureLoaded()
+        ServerRepository.uiState
+    }.collectAsStateWithLifecycle()
+    return remember(addons, plugins, downloads, servers.revision, coreItems, coreStatus) {
         PlaybackAvailability(addons.addons, plugins)
     }
 }

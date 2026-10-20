@@ -41,6 +41,7 @@ import com.nuvio.app.core.ui.themePalette
 import com.nuvio.app.core.ui.nuvioTypeScale
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
+import com.nuvio.app.core.i18n.localizedEpisodeTitle
 
 internal val PlayerTimelineContentInset = 2.dp
 
@@ -70,9 +71,10 @@ internal fun PlayerTimelineDetails(
             overflow = TextOverflow.Ellipsis,
         )
         if (seasonNumber != null && episodeNumber != null) {
-            val episodeCode = stringResource(Res.string.compose_player_episode_code, seasonNumber, episodeNumber)
+            val episodeCode = stringResource(Res.string.compose_player_episode_code_full, seasonNumber, episodeNumber)
+            val displayEpisodeTitle = localizedEpisodeTitle(episodeTitle, episodeNumber)
             Text(
-                text = if (episodeTitle.isNullOrBlank()) episodeCode else "$episodeCode • $episodeTitle",
+                text = if (displayEpisodeTitle.isNullOrBlank()) episodeCode else "$episodeCode • $displayEpisodeTitle",
                 style = typeScale.bodyMd.copy(fontSize = metrics.episodeInfoSize),
                 color = Color.White.copy(alpha = 0.9f),
                 maxLines = 1,

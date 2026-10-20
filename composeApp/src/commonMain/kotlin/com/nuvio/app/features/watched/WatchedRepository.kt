@@ -7,12 +7,14 @@ import com.nuvio.app.core.tracking.ensureTrackingProvidersRegistered
 import com.nuvio.app.features.details.MetaDetails
 import com.nuvio.app.features.details.MetaVideo
 import com.nuvio.app.features.profiles.ProfileRepository
+import com.nuvio.app.features.servers.ServerWatched
 import com.nuvio.app.features.tracking.TrackingProviderId
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
 import com.nuvio.app.features.tracking.TrackingSettingsRepository
 import com.nuvio.app.features.tracking.WatchProgressSource
 import com.nuvio.app.features.tracking.effectiveWatchProgressSource
 import com.nuvio.app.features.tracking.providerId
+import com.nuvio.app.features.watchprogress.ContinueWatchingPreferencesRepository
 import com.nuvio.app.features.watching.sync.SupabaseWatchedSyncAdapter
 import com.nuvio.app.features.watching.sync.WatchedDeltaEvent
 import com.nuvio.app.features.watching.sync.WatchedSyncAdapter
@@ -790,6 +792,9 @@ object WatchedRepository {
     }
 
     fun markWatched(items: Collection<WatchedItem>) {
+        items.filter { it.isEpisode }.map { it.id }.distinct().forEach {
+            ContinueWatchingPreferencesRepository.removeDismissedNextUpKeysForContent(it)
+        }
         markWatched(items = items, trackerHistorySync = WatchedTrackerHistorySync.Mirror)
     }
 
@@ -799,6 +804,14 @@ object WatchedRepository {
             trackerHistorySync = WatchedTrackerHistorySync.Skip,
             syncRemote = syncRemote,
         )
+    }
+
+    internal fun markWatchedLocally(items: Collection<WatchedItem>) {
+        markWatched(items = items, trackerHistorySync = WatchedTrackerHistorySync.Skip, syncRemote = false)
+    }
+
+    internal fun unmarkWatchedLocally(items: Collection<WatchedItem>) {
+        unmarkWatched(items = items, syncRemote = false)
     }
 
     private fun markWatched(
@@ -866,6 +879,10 @@ object WatchedRepository {
     }
 
     fun unmarkWatched(items: Collection<WatchedItem>) {
+        unmarkWatched(items = items, syncRemote = true)
+    }
+
+    private fun unmarkWatched(items: Collection<WatchedItem>, syncRemote: Boolean) {
         ensureLoaded()
         if (items.isEmpty()) return
         val source = activeSource
@@ -910,13 +927,13 @@ object WatchedRepository {
         if (removedItems.isNotEmpty()) {
             publish()
             persist()
-            pushDeleteToServer(items = removedItems, source = source)
+            if (syncRemote) pushDeleteToServer(items = removedItems, source = source)
         } else if (source.providerId != null) {
             if (removedExtraKeys) {
                 publish()
                 persist()
             }
-            pushDeleteToServer(items = items.toList(), source = source)
+            if (syncRemote) pushDeleteToServer(items = items.toList(), source = source)
         }
     }
 
@@ -1080,6 +1097,7 @@ object WatchedRepository {
         val operationGeneration = profileGeneration
         val sourceGenerationAtPush = sourceGeneration
         val accountId = (AuthRepository.state.value as? AuthState.Authenticated)?.userId
+        if (trackerHistorySync == WatchedTrackerHistorySync.Mirror) ServerWatched.mirror(items, played = true)
         accountScopeSnapshot().launch {
             try {
                 if (source.providerId == null) {
@@ -1116,6 +1134,7 @@ object WatchedRepository {
         val operationGeneration = profileGeneration
         val sourceGenerationAtPush = sourceGeneration
         val accountId = (AuthRepository.state.value as? AuthState.Authenticated)?.userId
+        ServerWatched.mirror(items, played = false)
         accountScopeSnapshot().launch {
             try {
                 if (source.providerId == null) {
@@ -1409,6 +1428,9 @@ object WatchedRepository {
         trackerHistorySync: WatchedTrackerHistorySync,
         source: WatchProgressSource,
     ): WatchedPushOutcome {
+        val (serverItems, items) = items.partition(ServerWatched::isServerItem)
+        if (trackerHistorySync == WatchedTrackerHistorySync.Mirror) ServerWatched.apply(serverItems, played = true)
+        if (items.isEmpty()) return WatchedPushOutcome(nuvioSyncSucceeded = true)
         var nuvioSyncSucceeded = false
         val succeededTrackerProviderIds = linkedSetOf<TrackingProviderId>()
         if (source.providerId == null) {
@@ -1446,6 +1468,9 @@ object WatchedRepository {
         source: WatchProgressSource,
     ): Boolean {
         var nuvioSucceeded = false
+        val (serverItems, items) = items.partition(ServerWatched::isServerItem)
+        ServerWatched.apply(serverItems, played = false)
+        if (items.isEmpty()) return true
         if (source.providerId == null) {
             try {
                 syncAdapter.delete(profileId = profileId, items = items)

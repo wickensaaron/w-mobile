@@ -1,6 +1,7 @@
 package com.nuvio.app.features.player
 
 import androidx.compose.ui.Modifier
+import com.nuvio.app.features.party.PartyMedia
 
 internal data class PlayerScreenArgs(
     val profileId: Int,
@@ -43,4 +44,8 @@ internal data class PlayerScreenArgs(
     val requireEnglishAudio: Boolean = false,
     val coreSelectionReference: String? = null,
     val onReturnToLive: (() -> Unit)? = null,
+    val launchId: Long? = null,
+    val sourceFilename: String? = null,
+    val onOpenPartyMedia: (PartyMedia) -> Unit = {},
+    val stream: com.nuvio.app.features.streams.StreamItem? = null,
 )

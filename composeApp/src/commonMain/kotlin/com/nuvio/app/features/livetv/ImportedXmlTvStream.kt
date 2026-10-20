@@ -206,6 +206,7 @@ internal class ImportedXmlTvByteGuard(private val limits: ImportedXmlTvLimits) {
     private var quote = 0
     private var tail = 0
     private var entityBytes = 0
+    private val entityName = StringBuilder(32)
     private var continuation = 0
     private var codePoint = 0
     private var minimum = 0
@@ -278,11 +279,26 @@ internal class ImportedXmlTvByteGuard(private val limits: ImportedXmlTvLimits) {
         else when (char) { '\'', '"' -> { quote = char.code; entityBytes = 0 }; '>' -> reset() }
     }
     private fun checkEntity(char: Char) {
-        if (char == '&') entityBytes = 1
-        else if (entityBytes != 0) {
+        if (char == '&') {
+            check(entityBytes == 0) { "Invalid XML entity" }
+            entityBytes = 1
+            entityName.clear()
+        } else if (entityBytes != 0) {
             entityBytes++
             check(entityBytes <= 256) { "XML entity exceeds device limit" }
-            if (char == ';') entityBytes = 0
+            if (char == ';') {
+                val name = entityName.toString()
+                val numeric = when {
+                    name.startsWith("#x") -> name.drop(2).toIntOrNull(16)
+                    name.startsWith("#") -> name.drop(1).toIntOrNull()
+                    else -> null
+                }
+                check(name in setOf("amp", "lt", "gt", "quot", "apos") ||
+                    numeric != null && (numeric in 0x20..0xd7ff || numeric in 0xe000..0xfffd ||
+                        numeric in 0x10000..0x10ffff || numeric in setOf(9, 10, 13))) { "Unsupported XML entity" }
+                entityBytes = 0
+                entityName.clear()
+            } else entityName.append(char)
         }
     }
     private fun validateUtf8(byte: Int) {

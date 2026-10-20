@@ -32,6 +32,7 @@ import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.plugins.PluginRepository
 import com.nuvio.app.features.search.SearchHistoryRepository
 import com.nuvio.app.features.search.SearchRepository
+import com.nuvio.app.features.servers.ServerRepository
 import com.nuvio.app.features.settings.ThemeSettingsRepository
 import com.nuvio.app.features.streams.StreamBadgeSettingsRepository
 import com.nuvio.app.features.tracking.TrackingProviderRegistry
@@ -260,6 +261,7 @@ object ProfileRepository {
         HomeCatalogSettingsRepository.onProfileChanged()
         HomeRepository.clear()
         MetaScreenSettingsRepository.onProfileChanged()
+        com.nuvio.app.features.shuffle.EpisodeShuffleRepository.onProfileChanged()
         ContinueWatchingPreferencesRepository.onProfileChanged()
         com.nuvio.app.features.watchprogress.ContinueWatchingEnrichmentCache.onProfileChanged()
         EpisodeReleaseNotificationsRepository.onProfileChanged()
@@ -270,6 +272,7 @@ object ProfileRepository {
         CollectionRepository.onProfileChanged()
         CollectionMobileSettingsRepository.onProfileChanged()
         DownloadsRepository.onProfileChanged()
+        ServerRepository.onProfileChanged()
         ProfileSettingsSync.onProfileChanged()
     }
 
@@ -368,6 +371,7 @@ object ProfileRepository {
         if (remaining.none { it.profileIndex == 1 }) return
         pushProfiles(remaining.map { it.toPushPayload() })
         ProfilePinCacheStorage.removePayload(profileIndex)
+        ServerRepository.removeProfile(profileIndex)
     }
 
     suspend fun verifyPin(profileIndex: Int, pin: String): PinVerifyResult {

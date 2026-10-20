@@ -49,22 +49,17 @@ internal fun rememberOpenMeta(navController: NuvioNavigator): (MetaPreview) -> U
         scope.launch {
             val resolvedId = if (preview.id.startsWith("tmdb:")) {
                 val tmdbId = preview.id.removePrefix("tmdb:").toIntOrNull()
-                tmdbId?.let {
+                val resolved = tmdbId?.let {
                     TmdbService.tmdbToImdb(
                         tmdbId = it,
                         mediaType = preview.type,
                     )
                 } ?: preview.id
+                resolved
             } else {
                 preview.id
             }
-            navController.navigate(
-                DetailRoute(
-                    type = preview.type,
-                    id = resolvedId,
-                    title = preview.name,
-                ),
-            )
+            navController.openPreview(preview.copy(id = resolvedId))
         }
     }
 }
