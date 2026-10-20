@@ -69,12 +69,12 @@ import com.nuvio.app.features.franchise.FilmFranchiseRepository
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.streaming_apple_hd
 import nuvio.composeapp.generated.resources.streaming_disney
-import nuvio.composeapp.generated.resources.streaming_netflix
+import nuvio.composeapp.generated.resources.streaming_netflix_raster
 import nuvio.composeapp.generated.resources.streaming_prime_wordmark_hd
-import nuvio.composeapp.generated.resources.streaming_hub_pixar
-import nuvio.composeapp.generated.resources.streaming_hub_marvel
-import nuvio.composeapp.generated.resources.streaming_hub_starwars
-import nuvio.composeapp.generated.resources.streaming_hub_natgeo
+import nuvio.composeapp.generated.resources.streaming_hub_pixar_raster
+import nuvio.composeapp.generated.resources.streaming_hub_marvel_raster
+import nuvio.composeapp.generated.resources.streaming_hub_starwars_raster
+import nuvio.composeapp.generated.resources.streaming_hub_natgeo_raster
 import org.jetbrains.compose.resources.painterResource
 import kotlinx.coroutines.launch
 
@@ -144,7 +144,7 @@ private fun ServiceHomeTile(
 private fun ServiceLogo(service: StreamingService, modifier: Modifier = Modifier) {
     Image(
         painter = painterResource(when (service) {
-            StreamingService.NETFLIX -> Res.drawable.streaming_netflix
+            StreamingService.NETFLIX -> Res.drawable.streaming_netflix_raster
             StreamingService.PRIME -> Res.drawable.streaming_prime_wordmark_hd
             StreamingService.DISNEY -> Res.drawable.streaming_disney
             StreamingService.APPLE -> Res.drawable.streaming_apple_hd
@@ -510,10 +510,10 @@ private fun DisneyHubButtons(selected: String?, onSelect: (String) -> Unit) {
                         ServiceLogo(StreamingService.DISNEY, Modifier.fillMaxSize())
                     } else {
                         val drawable = when (hub) {
-                            "Pixar" -> Res.drawable.streaming_hub_pixar
-                            "Marvel" -> Res.drawable.streaming_hub_marvel
-                            "Star Wars" -> Res.drawable.streaming_hub_starwars
-                            else -> Res.drawable.streaming_hub_natgeo
+                            "Pixar" -> Res.drawable.streaming_hub_pixar_raster
+                            "Marvel" -> Res.drawable.streaming_hub_marvel_raster
+                            "Star Wars" -> Res.drawable.streaming_hub_starwars_raster
+                            else -> Res.drawable.streaming_hub_natgeo_raster
                         }
                         Image(
                             painter = painterResource(drawable),

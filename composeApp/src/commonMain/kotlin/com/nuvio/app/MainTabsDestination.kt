@@ -69,7 +69,7 @@ internal fun MainTabsDestination(
     PlatformBackHandler(enabled = rootRouteActive, onBack = onBack)
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isTabletLayout = useTabletFloatingTabBar || maxWidth >= 768.dp
+        val isTabletLayout = useTabletFloatingTabBar || maxWidth >= 600.dp
         val tabActions = remember(actions, isTabletLayout) { actions(isTabletLayout) }
         val useNativeBottomTabs = if (useNativeNavigation) {
             useNativeTabBar
