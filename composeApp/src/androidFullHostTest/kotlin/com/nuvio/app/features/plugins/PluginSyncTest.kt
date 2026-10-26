@@ -168,7 +168,7 @@ class PluginSyncTest {
         }.toString())
         AddonRepository.initialize()
         assertEquals(1, AddonRepository.uiState.value.addons.size)
-        respond("[]")
+        respondAddonSnapshot("[]")
 
         AddonRepository.pullFromServer(1)
 
@@ -177,11 +177,11 @@ class PluginSyncTest {
         assertTrue(AddonStorage.loadAddonEnabledStates(1).isEmpty())
         AddonRepository.clearLocalState()
         AddonRepository.initialize()
-        respond("[]")
+        respondAddonSnapshot("[]")
         AddonRepository.pullFromServer(1)
 
         assertTrue(AddonRepository.uiState.value.addons.isEmpty())
-        assertPullsOnly("addons", count = 2)
+        assertAddonSnapshotPullsOnly(count = 2)
     }
 
     private fun seedPlugins(urls: List<String> = listOf(manifestUrl)) {
@@ -217,6 +217,30 @@ class PluginSyncTest {
 
     private fun respond(body: String) {
         server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(body))
+    }
+
+    private fun respondAddonSnapshot(body: String) {
+        // W reads the revision around the list to reject a changing remote snapshot.
+        respond("1")
+        respond(body)
+        respond("1")
+    }
+
+    private fun assertAddonSnapshotPullsOnly(count: Int) {
+        repeat(count) {
+            repeat(3) { index ->
+                val request = assertNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                if (index == 1) {
+                    assertEquals("GET", request.method)
+                    assertEquals("/rest/v1/addons", request.requestUrl?.encodedPath)
+                } else {
+                    assertEquals("POST", request.method)
+                    assertEquals("/rest/v1/rpc/sync_get_addon_revision", request.requestUrl?.encodedPath)
+                    assertTrue(request.body.readUtf8().contains("\"p_profile_id\":1"))
+                }
+            }
+        }
+        assertNull(server.takeRequest(750, TimeUnit.MILLISECONDS))
     }
 
     private fun assertPullsOnly(table: String, count: Int = 1) {

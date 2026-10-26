@@ -13,6 +13,7 @@ import com.nuvio.app.features.home.MetaPreview
 import com.nuvio.app.features.home.PosterShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
@@ -1184,13 +1185,16 @@ object TmdbMetadataService {
     private suspend inline fun <reified T> fetch(
         endpoint: String,
         query: Map<String, String> = emptyMap(),
+        throwOnFailure: Boolean = false,
     ): T? {
         val apiKey = TmdbSettingsRepository.effectiveApiKey().takeIf(String::isNotBlank) ?: return null
         val url = buildTmdbUrl(endpoint = endpoint, apiKey = apiKey, query = query)
         return runCatching {
             json.decodeFromString<T>(httpGetText(url))
         }.onFailure { error ->
-            log.w { "TMDB request failed for $endpoint: ${error.message}" }
+            if (error is CancellationException) throw error
+            log.w { "TMDB request failed for $endpoint (${error::class.simpleName})" }
+            if (throwOnFailure) throw error
         }.getOrNull()
     }
 
@@ -1198,6 +1202,7 @@ object TmdbMetadataService {
         tmdbId: Int,
         mediaType: String,
         language: String,
+        throwOnFailure: Boolean = false,
     ): List<MetaPreview> {
         val cacheKey = "$tmdbId:$mediaType:$language:recommendations"
         moreLikeThisCache[cacheKey]?.let { return it }
@@ -1205,6 +1210,7 @@ object TmdbMetadataService {
         val response = fetch<TmdbRecommendationResponse>(
             endpoint = "$mediaType/$tmdbId/recommendations",
             query = mapOf("language" to language),
+            throwOnFailure = throwOnFailure,
         ) ?: return emptyList()
 
         val items = response.results

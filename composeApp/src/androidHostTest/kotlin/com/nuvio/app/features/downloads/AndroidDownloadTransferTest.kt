@@ -120,6 +120,32 @@ class AndroidDownloadTransferTest {
     }
 
     @Test
+    fun successfulHtmlResponseDoesNotOverwriteAPartialVideo(): Unit = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/html").setBody("<html>Sign in</html>"))
+            val directory = temporary.newFolder()
+            val partial = File(directory, "video.mkv.part").apply { writeText("saved video prefix") }
+            assertFailsWith<IllegalStateException> {
+                transferAndroidDownload(downloadItem(server.url("/expired").toString()), directory,
+                    null, onHeaders = { _, _ -> }, onProgress = { _, _ -> })
+            }
+            assertEquals("saved video prefix", partial.readText())
+            assertFalse(File(directory, "video.mkv").exists())
+        }
+    }
+
+    @Test
+    fun emptySuccessResponseIsNotACompletedVideo(): Unit = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "video/mp4").setBody(""))
+            assertFailsWith<IOException> {
+                transferAndroidDownload(downloadItem(server.url("/empty").toString()), temporary.newFolder(),
+                    null, onHeaders = { _, _ -> }, onProgress = { _, _ -> })
+            }
+        }
+    }
+
+    @Test
     fun retryPolicyDistinguishesTransientAndPermanentFailures() {
         assertTrue(shouldRetryAndroidDownload(IOException("connection lost"), 0))
         assertTrue(shouldRetryAndroidDownload(DownloadHttpException(503), 0))

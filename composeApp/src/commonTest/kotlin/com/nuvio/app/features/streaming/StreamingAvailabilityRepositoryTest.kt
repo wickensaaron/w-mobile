@@ -3,8 +3,28 @@ package com.nuvio.app.features.streaming
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class StreamingAvailabilityRepositoryTest {
+    @Test
+    fun credentialRoundTripRestoresKeyProviderAndRegion() {
+        val expected = StreamingApiConfig("test-key", "rapidapi", "us")
+        assertEquals(expected, streamingConfigFromCredential(expected.toCredentialValue()))
+    }
+
+    @Test
+    fun clearingTheStreamingKeyProducesAnExplicitTombstone() {
+        assertEquals("", StreamingApiConfig().toCredentialValue())
+        assertEquals(StreamingApiConfig(), streamingConfigFromCredential(""))
+    }
+
+    @Test
+    fun legacyDefaultFieldsAndRemoteRegionAreNormalized() {
+        assertEquals(StreamingApiConfig("test-key"), streamingConfigFromCredential("""{"apiKey":" test-key "}"""))
+        assertEquals("gb", streamingConfigFromCredential("""{"apiKey":"test","country":"GB"}""").country)
+        assertFailsWith<Exception> { streamingConfigFromCredential("invalid-json") }
+    }
+
     private val show = """{
       "showType":"series", "title":"Example Series", "tmdbId":"tv/12345", "imdbId":"tt1234567",
       "releaseYear":2024,

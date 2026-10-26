@@ -51,6 +51,9 @@ data class DownloadItem(
     val errorMessage: String? = null,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
+    val isQueued: Boolean = false,
+    val wifiOnly: Boolean = false,
+    val bytesPerSecond: Long = 0,
 ) {
     val isEpisode: Boolean
         get() = seasonNumber != null && episodeNumber != null
@@ -88,6 +91,7 @@ data class DownloadsUiState(
 }
 
 enum class DownloadEnqueueResult {
+    AlreadyExists,
     Started,
     Replaced,
     MissingUrl,
@@ -95,6 +99,7 @@ enum class DownloadEnqueueResult {
 
     fun toastMessage(): String = runBlocking {
         when (this@DownloadEnqueueResult) {
+            AlreadyExists -> "Already downloaded or queued"
             Started -> getString(Res.string.downloads_enqueue_started)
             Replaced -> getString(Res.string.downloads_enqueue_replaced)
             MissingUrl -> getString(Res.string.downloads_enqueue_missing_url)

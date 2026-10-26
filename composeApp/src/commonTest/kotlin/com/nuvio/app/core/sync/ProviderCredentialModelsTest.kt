@@ -4,12 +4,31 @@ import com.nuvio.app.features.debrid.DebridSettings
 import com.nuvio.app.features.mdblist.MdbListSettings
 import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.tmdb.TmdbSettings
+import com.nuvio.app.features.streaming.StreamingApiConfig
+import com.nuvio.app.features.streaming.streamingConfigFromCredential
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class ProviderCredentialModelsTest {
+    @Test
+    fun `streaming credentials are restored through the same account snapshot as TMDB`() {
+        val local = ProviderCredentialSync.buildSnapshot(
+            profileId = 1, debrid = DebridSettings(), tmdb = TmdbSettings(),
+            mdbList = MdbListSettings(), player = PlayerSettingsUiState(),
+        )
+        val config = """{"apiKey":"remote-streaming","source":"rapidapi","country":"us"}"""
+        val remote = listOf(
+            SupabaseProviderCredential("tmdb", buildJsonObject { put("api_key", "remote-tmdb") }),
+            SupabaseProviderCredential("streaming_availability", buildJsonObject { put("config", config) }),
+        )
+        val restored = local.mergeRemote(remote)
+        assertEquals("remote-tmdb", restored.values.single { it.provider == "tmdb" }.value)
+        assertEquals(StreamingApiConfig("remote-streaming", "rapidapi", "us"),
+            streamingConfigFromCredential(restored.values.single { it.provider == "streaming_availability" }.value))
+    }
+
     @Test
     fun `TMDB credential snapshot contains the personal override`() {
         val snapshot = credentialSnapshot(TmdbSettings(apiKey = " personal-key "))
@@ -51,7 +70,7 @@ class ProviderCredentialModelsTest {
         val merged = local.mergeRemote(remote)
 
         assertEquals("remote-key", merged.values.single { it.provider == ProviderCredentialIds.TMDB }.value)
-        assertEquals("", merged.mergeRemote(emptyList()).values.single { it.provider == ProviderCredentialIds.TMDB }.value)
+        assertEquals("remote-key", merged.mergeRemote(emptyList()).values.single { it.provider == ProviderCredentialIds.TMDB }.value)
     }
 
     @Test
@@ -72,7 +91,7 @@ class ProviderCredentialModelsTest {
     }
 
     @Test
-    fun `missing remote provider clears its cached credential`() {
+    fun `missing remote provider preserves its cached credential`() {
         val snapshot = ProviderCredentialSnapshot(
             profileId = 1,
             values = listOf(
@@ -84,7 +103,7 @@ class ProviderCredentialModelsTest {
             SupabaseProviderCredential("debrid:torbox", buildJsonObject { put("api_key", "remote") }),
         )
 
-        assertEquals(listOf("remote", ""), snapshot.mergeRemote(rows).values.map { it.value })
+        assertEquals(listOf("remote", "local-anime"), snapshot.mergeRemote(rows).values.map { it.value })
     }
 
     @Test
@@ -110,11 +129,11 @@ class ProviderCredentialModelsTest {
         val merged = local.mergeRemote(remote)
 
         assertEquals("remote-torbox", merged.values[0].value)
-        assertEquals("", merged.values[1].value)
+        assertEquals("local-anime", merged.values[1].value)
     }
 
     @Test
-    fun `empty remote snapshot clears all cached credentials`() {
+    fun `empty remote snapshot does not erase credentials that have not migrated`() {
         val local = ProviderCredentialSnapshot(
             profileId = 1,
             values = listOf(
@@ -123,7 +142,7 @@ class ProviderCredentialModelsTest {
             ),
         )
 
-        assertEquals(listOf("", ""), local.mergeRemote(emptyList()).values.map { it.value })
+        assertEquals(listOf("local-torbox", "local-anime"), local.mergeRemote(emptyList()).values.map { it.value })
     }
 
     @Test

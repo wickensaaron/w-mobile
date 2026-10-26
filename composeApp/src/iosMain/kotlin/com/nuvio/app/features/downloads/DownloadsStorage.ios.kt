@@ -1,8 +1,10 @@
 package com.nuvio.app.features.downloads
 
 import com.nuvio.app.features.profiles.ProfileRepository
+import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Foundation.NSUserDefaults
 
+@OptIn(ExperimentalForeignApi::class)
 internal actual object DownloadsStorage {
     private const val payloadKey = "downloads_payload"
 
@@ -15,6 +17,11 @@ internal actual object DownloadsStorage {
             }
         }
     }
+
+    actual fun loadPreferences(): String? = ownerKey()?.let { NSUserDefaults.standardUserDefaults.stringForKey(it + "_preferences") }
+    actual fun savePreferences(payload: String) { ownerKey()?.let { NSUserDefaults.standardUserDefaults.setObject(payload, forKey = it + "_preferences") } }
+    actual fun availableBytes(): Long? = (platform.Foundation.NSFileManager.defaultManager.attributesOfFileSystemForPath(
+        platform.Foundation.NSHomeDirectory(), null)?.get(platform.Foundation.NSFileSystemFreeSize) as? platform.Foundation.NSNumber)?.longLongValue
 
     actual fun loadPayload(): String? =
         ownerKey()?.let { NSUserDefaults.standardUserDefaults.stringForKey(it) }

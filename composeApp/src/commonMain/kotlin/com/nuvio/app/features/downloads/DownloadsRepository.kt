@@ -31,7 +31,7 @@ object DownloadsRepository {
     }
 
     fun onProfileChanged() {
-        activeHandles.values.forEach(DownloadsTaskHandle::cancel)
+        activeHandles.values.forEach(DownloadsTaskHandle::pause)
         activeHandles.clear()
         loadFromDisk()
     }
@@ -125,6 +125,8 @@ object DownloadsRepository {
         episodeTitle: String?,
         episodeThumbnail: String?,
         stream: StreamItem,
+        wifiOnly: Boolean = false,
+        replaceExisting: Boolean = false,
     ): DownloadEnqueueResult {
         // These URLs and bearer headers expire and must never enter the persisted download queue.
         if (stream.isWCoreStream) return DownloadEnqueueResult.UnsupportedFormat
@@ -149,6 +151,7 @@ object DownloadsRepository {
         var replacedExisting = false
         val currentItems = _uiState.value.items.toMutableList()
         val existing = currentItems.firstOrNull { it.logicalContentKey == logicalKey }
+        if (existing != null && !replaceExisting) return DownloadEnqueueResult.AlreadyExists
         if (existing != null) {
             replacedExisting = true
             activeHandles.remove(existing.id)?.cancel()
@@ -194,6 +197,8 @@ object DownloadsRepository {
             localFileUri = null,
             fileName = fileName,
             status = DownloadStatus.Downloading,
+            isQueued = true,
+            wifiOnly = wifiOnly,
             downloadedBytes = 0L,
             totalBytes = null,
             errorMessage = null,
@@ -222,6 +227,8 @@ object DownloadsRepository {
         mutateItem(downloadId) { current ->
             current.copy(
                 status = DownloadStatus.Paused,
+                isQueued = false,
+                bytesPerSecond = 0,
                 updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                 errorMessage = null,
             )
@@ -243,6 +250,8 @@ object DownloadsRepository {
 
         val reset = item.copy(
             status = DownloadStatus.Downloading,
+            isQueued = true,
+            bytesPerSecond = 0,
             errorMessage = null,
             localFileUri = null,
             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
@@ -312,16 +321,28 @@ object DownloadsRepository {
 
     private fun startDownload(item: DownloadItem) {
         val request = DownloadPlatformRequest(item)
+        var sampledBytes = item.downloadedBytes
+        var sampledAt = DownloadsClock.nowEpochMs()
 
         val handle = DownloadsPlatformDownloader.start(
             request = request,
+            onQueueState = { queued ->
+                if (_uiState.value.items.firstOrNull { it.id == item.id }?.isQueued != queued) {
+                    mutateItem(item.id) { current -> current.copy(isQueued = queued) }
+                }
+            },
             onProgress = { downloadedBytes, totalBytes ->
+                val now = DownloadsClock.nowEpochMs()
+                val elapsed = now - sampledAt
+                val speed = if (elapsed >= 1000 && downloadedBytes >= sampledBytes) (downloadedBytes - sampledBytes) * 1000 / elapsed else null
+                if (elapsed >= 1000) { sampledAt = now; sampledBytes = downloadedBytes }
                 mutateItem(item.id) { current ->
                     if (current.status != DownloadStatus.Downloading) {
                         current
                     } else {
                         current.copy(
                             downloadedBytes = downloadedBytes.coerceAtLeast(0L),
+                            bytesPerSecond = speed ?: current.bytesPerSecond,
                             totalBytes = totalBytes?.takeIf { it > 0L },
                             updatedAtEpochMs = DownloadsClock.nowEpochMs(),
                             errorMessage = null,

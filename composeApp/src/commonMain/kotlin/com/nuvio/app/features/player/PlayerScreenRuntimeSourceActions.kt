@@ -14,6 +14,7 @@ import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.servers.ServerPlayback
 import com.nuvio.app.features.servers.serverPlaybackMessage
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.streams.StreamLinkCacheRepository
 import com.nuvio.app.features.streams.YouTubeStreamResolver
 import com.nuvio.app.features.watchprogress.WatchProgressEntry
@@ -29,19 +30,21 @@ internal fun PlayerScreenRuntime.resolveDebridForPlayer(
     stream: StreamItem,
     season: Int?,
     episode: Int?,
+    isCurrent: () -> Boolean = { true },
     onResolved: (StreamItem) -> Unit,
     onStale: () -> Unit,
 ): Boolean {
     if (!DirectDebridPlaybackResolver.shouldResolveToPlayableStream(stream)) return false
-    scope.launch {
+    sourceSelectionJob = scope.launch {
         val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(
             stream = stream,
             season = season,
             episode = episode,
         )
         when (resolved) {
-            is DirectDebridPlayableResult.Success -> onResolved(resolved.stream)
+            is DirectDebridPlayableResult.Success -> if (isCurrent()) onResolved(resolved.stream)
             else -> {
+                if (!isCurrent()) return@launch
                 resolved.toastMessage()?.let { NuvioToastController.show(it) }
                 if (resolved == DirectDebridPlayableResult.Stale) {
                     onStale()
@@ -54,13 +57,14 @@ internal fun PlayerScreenRuntime.resolveDebridForPlayer(
 
 internal fun PlayerScreenRuntime.prepareServerForPlayer(
     stream: StreamItem,
+    isCurrent: () -> Boolean = { true },
     onPrepared: suspend (StreamItem) -> Unit,
 ): Boolean {
     if (!stream.needsServerPreparation) return false
-    scope.launch {
+    sourceSelectionJob = scope.launch {
         runCatching { ServerPlayback.prepare(stream) }
             .onFailure { if (it is CancellationException) throw it }
-            .onSuccess { onPrepared(it) }
+            .onSuccess { if (isCurrent()) onPrepared(it) else ServerPlayback.stop(it.playableDirectUrl) }
             .onFailure { NuvioToastController.show(it.serverPlaybackMessage()) }
     }
     return true
@@ -68,11 +72,13 @@ internal fun PlayerScreenRuntime.prepareServerForPlayer(
 
 internal fun PlayerScreenRuntime.resolveYouTubeForPlayer(
     stream: StreamItem,
+    isCurrent: () -> Boolean = { true },
     onResolved: (StreamItem) -> Unit,
 ): Boolean {
     if (stream.youTubeIdToResolve == null) return false
-    scope.launch {
+    sourceSelectionJob = scope.launch {
         val resolved = YouTubeStreamResolver.Default.resolve(stream)
+        if (!isCurrent()) return@launch
         if (resolved == null) {
             NuvioToastController.show(getString(Res.string.youtube_resolution_failed))
             return@launch
@@ -279,18 +285,31 @@ internal fun PlayerScreenRuntime.switchToSource(
     stream: StreamItem,
     saveForReuse: Boolean = true,
     coreRefreshed: Boolean = false,
+    isRequestCurrent: () -> Boolean = { true },
+    selectionToken: Long? = null,
 ) {
+    val token = selectionToken ?: sourceSelectionGate.begin().also {
+        sourceSelectionJob?.cancel()
+        credentialRefreshJob?.cancel()
+        credentialRefreshJob = null
+    }
+    if (!sourceSelectionGate.isCurrent(token) || !isRequestCurrent()) return
+    val requestProfile = ProfileRepository.activeProfileId
+    val requestPlayback = activePlaybackKey
+    fun currentSelection(): Boolean = sourceSelectionGate.isCurrent(token) && isRequestCurrent() &&
+        requestProfile == ProfileRepository.activeProfileId && requestPlayback == activePlaybackKey
     requireEnglishAudio = false
-    if (!coreRefreshed && resolveCoreForPlayer(stream) { switchToSource(it, coreRefreshed = true) }) return
-    if (prepareServerForPlayer(stream) { switchToSource(it) }) return
+    if (!coreRefreshed && resolveCoreForPlayer(stream) { switchToSource(it, coreRefreshed = true, selectionToken = token, isRequestCurrent = ::currentSelection) }) return
+    if (prepareServerForPlayer(stream, ::currentSelection) { switchToSource(it, selectionToken = token, isRequestCurrent = ::currentSelection) }) return
     // The resolved URL expires after a few hours, so it isn't kept for reuse.
-    if (resolveYouTubeForPlayer(stream) { switchToSource(it, saveForReuse = false) }) return
+    if (resolveYouTubeForPlayer(stream, ::currentSelection) { switchToSource(it, saveForReuse = false, selectionToken = token, isRequestCurrent = ::currentSelection) }) return
     if (
         resolveDebridForPlayer(
             stream = stream,
             season = activeSeasonNumber,
             episode = activeEpisodeNumber,
-            onResolved = { switchToSource(it) },
+            isCurrent = ::currentSelection,
+            onResolved = { switchToSource(it, selectionToken = token, isRequestCurrent = ::currentSelection) },
             onStale = {
                 val vid = activeVideoId
                 if (vid != null) {
@@ -358,12 +377,23 @@ internal fun PlayerScreenRuntime.switchToEpisodeStream(
     requireEnglish: Boolean = false,
     isRequestCurrent: () -> Boolean = { true },
 
+    selectionToken: Long? = null,
 ) {
-    if (!coreRefreshed && resolveCoreForPlayer(stream, isRequestCurrent, { switchToEpisodeStream(it, episode, coreRefreshed = true, requireEnglish = requireEnglish) })) return
-    if (prepareServerForPlayer(stream) { switchToEpisodeStream(it, episode, serverResumeMs = newerServerResumeMs(it, episode)) }) return
+    val token = selectionToken ?: sourceSelectionGate.begin().also {
+        sourceSelectionJob?.cancel()
+        credentialRefreshJob?.cancel()
+        credentialRefreshJob = null
+    }
+    if (!sourceSelectionGate.isCurrent(token) || !isRequestCurrent()) return
+    val requestProfile = ProfileRepository.activeProfileId
+    val requestPlayback = activePlaybackKey
+    fun currentSelection(): Boolean = sourceSelectionGate.isCurrent(token) && isRequestCurrent() &&
+        requestProfile == ProfileRepository.activeProfileId && requestPlayback == activePlaybackKey
+    if (!coreRefreshed && resolveCoreForPlayer(stream, ::currentSelection, { switchToEpisodeStream(it, episode, coreRefreshed = true, requireEnglish = requireEnglish, selectionToken = token, isRequestCurrent = ::currentSelection) })) return
+    if (prepareServerForPlayer(stream, ::currentSelection) { switchToEpisodeStream(it, episode, serverResumeMs = newerServerResumeMs(it, episode), requireEnglish = requireEnglish, selectionToken = token, isRequestCurrent = ::currentSelection) }) return
     if (
-        resolveYouTubeForPlayer(stream) { resolved ->
-            switchToEpisodeStream(resolved, episode, saveForReuse = false)
+        resolveYouTubeForPlayer(stream, ::currentSelection) { resolved ->
+            switchToEpisodeStream(resolved, episode, saveForReuse = false, requireEnglish = requireEnglish, selectionToken = token, isRequestCurrent = ::currentSelection)
         }
     ) return
     if (
@@ -371,7 +401,8 @@ internal fun PlayerScreenRuntime.switchToEpisodeStream(
             stream = stream,
             season = episode.season,
             episode = episode.episode,
-            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode, isRequestCurrent = isRequestCurrent, requireEnglish = requireEnglish) },
+            isCurrent = ::currentSelection,
+            onResolved = { resolvedStream -> switchToEpisodeStream(resolvedStream, episode, isRequestCurrent = ::currentSelection, requireEnglish = requireEnglish, selectionToken = token) },
             onStale = {
                 PlayerStreamsRepository.loadEpisodeStreams(
                     parentMetaId = parentMetaId,
@@ -553,6 +584,7 @@ internal fun PlayerScreenRuntime.openEpisodesPanel() {
 private data class EpisodeResume(val positionMs: Long, val fraction: Float?)
 
 private fun PlayerScreenRuntime.resetEpisodePanelAndNextEpisodeState() {
+    sourceSelectionGate.invalidate()
     showNextEpisodeCard = false
     showSourcesPanel = false
     showEpisodesPanel = false

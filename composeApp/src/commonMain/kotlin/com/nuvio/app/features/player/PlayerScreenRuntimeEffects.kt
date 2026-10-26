@@ -409,6 +409,8 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
             playerController?.clearNowPlayingInfo()
             P2pStreamingEngine.shutdown()
             cancelNextEpisodePreload()
+            sourceSelectionGate.invalidate()
+            sourceSelectionJob?.cancel()
             PlayerStreamsRepository.clearAll()
         }
     }

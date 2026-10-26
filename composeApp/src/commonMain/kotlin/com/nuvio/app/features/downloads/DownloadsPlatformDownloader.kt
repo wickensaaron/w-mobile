@@ -20,6 +20,7 @@ internal expect object DownloadsPlatformDownloader {
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: () -> Unit,
+        onQueueState: (Boolean) -> Unit = {},
     ): DownloadsTaskHandle
 
     fun restoreItem(item: DownloadItem): DownloadItem

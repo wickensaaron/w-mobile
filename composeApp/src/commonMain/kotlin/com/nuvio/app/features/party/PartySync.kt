@@ -35,6 +35,11 @@ internal object PartySync {
         return if (durationMs > 0L) clamped.coerceAtMost(durationMs) else clamped
     }
 
+    // All incoming states are server-authoritative. Compare against the last
+    // confirmed revision, never a speculative local action or a member-ID tie-break.
+    fun acceptsServerState(candidate: PartyPlayback, confirmed: PartyPlayback?): Boolean =
+        confirmed == null || candidate.seq >= confirmed.seq
+
     fun isNewer(candidate: PartyPlayback, current: PartyPlayback?): Boolean {
         if (current == null) return true
         if (candidate.seq != current.seq) return candidate.seq > current.seq

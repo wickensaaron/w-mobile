@@ -16,6 +16,9 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -75,15 +78,16 @@ fun DownloadsScreen(
     var downloadPendingDeletionId by rememberSaveable { mutableStateOf<String?>(null) }
     val openDownloadsDirectoryFailedText = stringResource(Res.string.downloads_open_directory_failed)
 
-    val completedEpisodes = remember(uiState.items) {
-        uiState.completedItems
+    var expandedSeasons by rememberSaveable(selectedShowId) { mutableStateOf(emptyList<Int>()) }
+    val allEpisodes = remember(uiState.items) {
+        uiState.items
             .filter { it.isEpisode }
             .sortedForSeriesDownloads()
     }
 
-    val selectedShowTitle = remember(selectedShowId, completedEpisodes) {
+    val selectedShowTitle = remember(selectedShowId, allEpisodes) {
         selectedShowId?.let { showId ->
-            completedEpisodes.firstOrNull { it.parentMetaId == showId }?.title
+            allEpisodes.firstOrNull { it.downloadShowId == showId }?.title
         }
     }
 
@@ -135,7 +139,9 @@ fun DownloadsScreen(
         } else {
             downloadsShowContent(
                 showId = selectedShowId.orEmpty(),
-                episodes = completedEpisodes,
+                episodes = allEpisodes,
+                expandedSeasons = expandedSeasons,
+                onToggleSeason = { number -> expandedSeasons = if (number in expandedSeasons) expandedSeasons - number else expandedSeasons + number },
                 onOpenDownload = onOpenDownload,
                 onDeleteDownload = { downloadPendingDeletionId = it },
             )
@@ -225,15 +231,23 @@ private fun LazyListScope.downloadsRootContent(
             }
         }
     }
-    items(items = visibleItems, key = { it.id }) { item ->
-        DownloadRow(
-            item = item,
-            onOpen = { onOpenDownload(item) },
-            onPause = { DownloadsRepository.pauseDownload(item.id) },
-            onResume = { DownloadsRepository.resumeDownload(item.id) },
-            onRetry = { DownloadsRepository.retryDownload(item.id) },
-            onDelete = { onDeleteDownload(item.id) },
-        )
+    val shows = groupedDownloadShows(visibleItems)
+    if (shows.isNotEmpty()) {
+        item(key = "download-shows-heading") { SectionTitle(if (showingReady) "Shows" else "Shows in your download queue") }
+        items(shows, key = { "download-show-${it.id}" }) { show ->
+            DownloadShowBanner(show, onClick = { onOpenShow(show.id, show.title) })
+        }
+    }
+    val movies = visibleItems.filterNot { it.isEpisode }.sortedWith(compareBy<DownloadItem> { it.title.lowercase() }.thenBy { it.id })
+    if (movies.isNotEmpty()) {
+        item(key = "download-movies-heading") { SectionTitle("Movies") }
+        items(movies, key = { it.id }) { item ->
+            DownloadRow(item = item, onOpen = { onOpenDownload(item) },
+                onPause = { DownloadsRepository.pauseDownload(item.id) },
+                onResume = { DownloadsRepository.resumeDownload(item.id) },
+                onRetry = { DownloadsRepository.retryDownload(item.id) },
+                onDelete = { onDeleteDownload(item.id) })
+        }
     }
     if (visibleItems.isEmpty()) {
         item {
@@ -275,21 +289,21 @@ private fun DownloadSegment(label: String, selected: Boolean, onClick: () -> Uni
 private fun LazyListScope.downloadsShowContent(
     showId: String,
     episodes: List<DownloadItem>,
+    expandedSeasons: List<Int>,
+    onToggleSeason: (Int) -> Unit,
     onOpenDownload: (DownloadItem) -> Unit,
     onDeleteDownload: (String) -> Unit,
 ) {
     val showEpisodes = episodes
-        .filter { it.parentMetaId == showId }
+        .filter { it.downloadShowId == showId }
         .sortedForSeriesDownloads()
 
-    val seasons = showEpisodes
-        .groupBy { it.seasonNumber ?: 0 }
-        .toList()
-        .sortedWith(
-            compareBy<Pair<Int, List<DownloadItem>>> { (season, _) ->
-                if (season == 0) 0 else 1
-            }.thenBy { (season, _) -> if (season == 0) 0 else season },
-        )
+    val seasons = groupedDownloadSeasons(showEpisodes)
+    if (showEpisodes.isNotEmpty()) {
+        item(key = "download-show-banner-$showId") {
+            DownloadShowBanner(DownloadShowGroup(showId, showEpisodes.first().title, showEpisodes))
+        }
+    }
 
     if (seasons.isEmpty()) {
         item {
@@ -310,30 +324,75 @@ private fun LazyListScope.downloadsShowContent(
     }
 
     seasons.forEach { (seasonNumber, entries) ->
-        item {
-            SectionTitle(
-                if (seasonNumber == 0) {
-                    stringResource(Res.string.episodes_specials)
-                } else {
-                    stringResource(Res.string.episodes_season, seasonNumber)
-                },
-            )
+        item(key = "download-season-$showId-$seasonNumber") {
+            DownloadSeasonBanner(seasonNumber, entries, seasonNumber in expandedSeasons,
+                onClick = { onToggleSeason(seasonNumber) })
         }
+        if (seasonNumber in expandedSeasons) {
+            items(entries, key = { it.id }) { item ->
+                DownloadRow(item = item, onOpen = { onOpenDownload(item) },
+                    onPause = { DownloadsRepository.pauseDownload(item.id) },
+                    onResume = { DownloadsRepository.resumeDownload(item.id) },
+                    onRetry = { DownloadsRepository.retryDownload(item.id) },
+                    onDelete = { onDeleteDownload(item.id) })
+            }
+        }
+    }
+}
 
-        val sortedEpisodes = entries.sortedForSeriesDownloads()
+private fun downloadGroupStatus(entries: List<DownloadItem>): String = listOfNotNull(
+    entries.count { it.status == DownloadStatus.Completed }.takeIf { it > 0 }?.let { "$it ready to watch" },
+    entries.count { it.status == DownloadStatus.Downloading && !it.isQueued }.takeIf { it > 0 }?.let { "$it downloading" },
+    entries.count { it.status == DownloadStatus.Downloading && it.isQueued }.takeIf { it > 0 }?.let { "$it queued" },
+    entries.count { it.status == DownloadStatus.Paused }.takeIf { it > 0 }?.let { "$it paused" },
+    entries.count { it.status == DownloadStatus.Failed }.takeIf { it > 0 }?.let { "$it need retry" },
+).joinToString(" - ")
 
-        items(
-            items = sortedEpisodes,
-            key = { it.id },
-        ) { item ->
-            DownloadRow(
-                item = item,
-                onOpen = { onOpenDownload(item) },
-                onPause = { DownloadsRepository.pauseDownload(item.id) },
-                onResume = { DownloadsRepository.resumeDownload(item.id) },
-                onRetry = { DownloadsRepository.retryDownload(item.id) },
-                onDelete = { onDeleteDownload(item.id) },
-            )
+@Composable
+private fun DownloadShowBanner(show: DownloadShowGroup, onClick: (() -> Unit)? = null) {
+    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+        .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            val art = show.episodes.firstNotNullOfOrNull { it.poster?.takeIf(String::isNotBlank) }
+                ?: show.episodes.firstNotNullOfOrNull { it.background?.takeIf(String::isNotBlank) }
+            Box(Modifier.width(76.dp).height(112.dp).clip(MaterialTheme.shapes.medium)
+                .background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) {
+                if (art != null) AsyncImage(model = art, contentDescription = null,
+                    modifier = Modifier.width(76.dp).height(112.dp), contentScale = ContentScale.Crop)
+                else Text(show.title.take(1), style = MaterialTheme.typography.headlineLarge)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text(show.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                val seasons = show.episodes.map { it.seasonNumber }.distinct().size
+                Text("$seasons ${if (seasons == 1) "season" else "seasons"} - ${show.episodes.size} ${if (show.episodes.size == 1) "episode" else "episodes"}",
+                    style = MaterialTheme.typography.bodyMedium)
+                Text(downloadGroupStatus(show.episodes), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (onClick != null) Text("Open seasons", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+            }
+            if (onClick != null) Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+        }
+    }
+}
+
+@Composable
+private fun DownloadSeasonBanner(number: Int, entries: List<DownloadItem>, expanded: Boolean, onClick: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(if (number == 0) "Specials" else "Season $number", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold)
+                Text("${entries.size} ${if (entries.size == 1) "episode" else "episodes"} - ${downloadGroupStatus(entries)}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                contentDescription = if (expanded) "Collapse season" else "Expand season")
         }
     }
 }
@@ -356,7 +415,7 @@ private fun DownloadRow(
     val displaySubtitle = listOfNotNull(
         contentSubtitle.takeIf { it.isNotBlank() } ?: stringResource(Res.string.downloads_movie_label),
         knownSize?.let(::formatBytes),
-    ).joinToString(" • ")
+    ).joinToString(" - ")
 
     Surface(
         modifier = Modifier
@@ -522,7 +581,7 @@ private fun downloadDisplaySubtitle(
         episodeCode,
         item.episodeTitle?.trim().orEmpty().takeIf { it.isNotBlank() && it != displayTitle },
         item.title.trim().takeIf { it.isNotBlank() && it != displayTitle },
-    ).filterNotNull().joinToString(" • ")
+    ).filterNotNull().joinToString(" - ")
 }
 
 @Composable
@@ -545,7 +604,10 @@ private fun statusText(item: DownloadItem): String {
     }
 
     return when (item.status) {
-        DownloadStatus.Downloading -> stringResource(Res.string.downloads_status_downloading, size)
+        DownloadStatus.Downloading -> when {
+            item.isQueued -> if (item.wifiOnly) "Queued - Wi-Fi only" else "Queued - waiting for a download slot"
+            else -> listOfNotNull(stringResource(Res.string.downloads_status_downloading, size), downloadTransferDetail(item)).joinToString(" - ")
+        }
         DownloadStatus.Paused -> stringResource(Res.string.downloads_status_paused, size)
         DownloadStatus.Completed -> stringResource(
             Res.string.downloads_status_completed,

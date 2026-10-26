@@ -15,7 +15,7 @@ object TmdbService {
     private val tmdbToImdbCache = linkedMapOf<String, String>()
     private val cacheMutex = Mutex()
 
-    suspend fun ensureTmdbId(videoId: String, mediaType: String, fallbackImdbId: String? = null): String? {
+    suspend fun ensureTmdbId(videoId: String, mediaType: String, fallbackImdbId: String? = null, throwOnFailure: Boolean = false): String? {
         val apiKey = TmdbSettingsRepository.effectiveApiKey()
 
         val normalized = videoId
@@ -29,7 +29,7 @@ object TmdbService {
         if (normalized.isBlank()) return null
         if (normalized.all(Char::isDigit)) return normalized
         if (normalized.startsWith("tt", ignoreCase = true)) {
-            return imdbToTmdb(imdbId = normalized, mediaType = mediaType, apiKey = apiKey)
+            return imdbToTmdb(imdbId = normalized, mediaType = mediaType, apiKey = apiKey, throwOnFailure = throwOnFailure)
         }
 
         // Fallback: use the IMDB ID supplied by the addon's meta response
@@ -38,13 +38,13 @@ object TmdbService {
             ?.substringBefore(':')
             ?.takeIf { it.startsWith("tt", ignoreCase = true) }
         if (normalizedFallback != null) {
-            return imdbToTmdb(imdbId = normalizedFallback, mediaType = mediaType, apiKey = apiKey)
+            return imdbToTmdb(imdbId = normalizedFallback, mediaType = mediaType, apiKey = apiKey, throwOnFailure = throwOnFailure)
         }
 
         return null
     }
 
-    suspend fun tmdbToImdb(tmdbId: Int, mediaType: String): String? {
+    suspend fun tmdbToImdb(tmdbId: Int, mediaType: String, throwOnFailure: Boolean = false): String? {
         val apiKey = TmdbSettingsRepository.effectiveApiKey()
 
         val cacheKey = "$tmdbId:${normalizeMediaType(mediaType)}"
@@ -56,7 +56,7 @@ object TmdbService {
             "tv" -> "tv/$tmdbId/external_ids"
             else -> "movie/$tmdbId/external_ids"
         }
-        val body = fetch<TmdbExternalIdsResponse>(endpoint = endpoint, apiKey = apiKey) ?: return null
+        val body = fetch<TmdbExternalIdsResponse>(endpoint = endpoint, apiKey = apiKey, throwOnFailure = throwOnFailure) ?: return null
         val imdbId = body.imdbId?.trim()?.takeIf(String::isNotBlank) ?: return null
 
         cacheMutex.withLock {
@@ -66,7 +66,7 @@ object TmdbService {
         return imdbId
     }
 
-    private suspend fun imdbToTmdb(imdbId: String, mediaType: String, apiKey: String): String? {
+    private suspend fun imdbToTmdb(imdbId: String, mediaType: String, apiKey: String, throwOnFailure: Boolean): String? {
         val normalizedType = normalizeMediaType(mediaType)
         val cacheKey = "$imdbId:$normalizedType"
         cacheMutex.withLock {
@@ -77,6 +77,7 @@ object TmdbService {
             endpoint = "find/$imdbId",
             apiKey = apiKey,
             query = mapOf("external_source" to "imdb_id"),
+            throwOnFailure = throwOnFailure,
         ) ?: return null
 
         val resultId = when (normalizedType) {
@@ -101,12 +102,15 @@ object TmdbService {
         endpoint: String,
         apiKey: String,
         query: Map<String, String> = emptyMap(),
+        throwOnFailure: Boolean = false,
     ): T? {
         val url = buildTmdbUrl(endpoint = endpoint, apiKey = apiKey, query = query)
         return runCatching {
             json.decodeFromString<T>(httpGetText(url))
         }.onFailure { error ->
-            log.w { "TMDB request failed for $endpoint: ${error.message}" }
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            log.w { "TMDB request failed for $endpoint (${error::class.simpleName})" }
+            if (throwOnFailure) throw error
         }.getOrNull()
     }
 

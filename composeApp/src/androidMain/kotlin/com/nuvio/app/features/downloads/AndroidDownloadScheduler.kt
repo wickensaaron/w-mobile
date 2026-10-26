@@ -31,12 +31,14 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 
 internal class AndroidDownloadScheduler(val context: Context) {
     val store = AndroidDownloadStore(File(context.filesDir, "download-transfers"))
     val directory = File(context.filesDir, "downloads")
+    private val transferSlots = kotlinx.coroutines.sync.Semaphore(2)
     private val locks = ConcurrentHashMap<String, Mutex>()
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -53,7 +55,7 @@ internal class AndroidDownloadScheduler(val context: Context) {
             } else {
                 val work = OneTimeWorkRequestBuilder<DownloadsTransferWorker>()
                     .setInputData(workDataOf(FILE_NAME to item.fileName, GENERATION to transfer.generation))
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(if (item.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build())
                     .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                     .build()
                 val operation = WorkManager.getInstance(context).enqueueUniqueWork(
@@ -78,7 +80,7 @@ internal class AndroidDownloadScheduler(val context: Context) {
     internal fun buildJob(transfer: AndroidDownloadTransfer): JobInfo =
         JobInfo.Builder(transfer.jobId, ComponentName(context, DownloadsTransferJobService::class.java))
             .setUserInitiated(true)
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setRequiredNetworkType(if (transfer.item.wifiOnly) JobInfo.NETWORK_TYPE_UNMETERED else JobInfo.NETWORK_TYPE_ANY)
             .setPersisted(true)
             .setEstimatedNetworkBytes(transfer.item.totalBytes ?: JobInfo.NETWORK_BYTES_UNKNOWN.toLong(), 0L)
             .setBackoffCriteria(30_000L, JobInfo.BACKOFF_POLICY_EXPONENTIAL)
@@ -138,6 +140,16 @@ internal class AndroidDownloadScheduler(val context: Context) {
     suspend fun execute(
         transfer: AndroidDownloadTransfer,
         network: Network? = null,
+        onProgress: (AndroidDownloadTransfer) -> Unit,
+    ): Boolean = transferSlots.withPermit {
+        if (!isActive(transfer)) return@withPermit false
+        updateActive(transfer) { it.copy(item = it.item.copy(isQueued = false)) }
+        executeTransfer(transfer, network, onProgress)
+    }
+
+    private suspend fun executeTransfer(
+        transfer: AndroidDownloadTransfer,
+        network: Network?,
         onProgress: (AndroidDownloadTransfer) -> Unit,
     ): Boolean = lock(transfer.item.fileName).withLock {
         val fileName = transfer.item.fileName

@@ -18,6 +18,7 @@ internal object ProviderCredentialIds {
     const val ANIMESKIP = "animeskip"
     const val INTRODB = "introdb"
     const val WCORE = "wcore"
+    const val STREAMING_AVAILABILITY = "streaming_availability"
 
     fun debrid(providerId: String): String = "debrid:$providerId"
 }
@@ -44,7 +45,9 @@ internal data class ProviderCredentialSnapshot(
         val remoteByProvider = rows.associateBy { it.provider.lowercase() }
         return copy(
             values = values.map { local ->
-                val remote = remoteByProvider[local.provider.lowercase()] ?: return@map local.copy(value = "")
+                // Older clients may not know every provider. Only an explicit empty
+                // value clears a credential; omission must preserve the local setting.
+                val remote = remoteByProvider[local.provider.lowercase()] ?: return@map local
                 val element = remote.credentialJson[local.field] as? JsonPrimitive
                     ?: error("Invalid credential payload for ${local.provider}")
                 val value = element.contentOrNull

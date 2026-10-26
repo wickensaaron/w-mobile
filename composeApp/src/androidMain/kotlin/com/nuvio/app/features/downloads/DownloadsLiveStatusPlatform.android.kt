@@ -184,6 +184,7 @@ internal actual object DownloadsLiveStatusPlatform {
 
     private fun buildSubtitle(item: DownloadItem): String {
         val detail = item.displaySubtitle
+        if (item.status == DownloadStatus.Downloading && item.isQueued) return if (item.wifiOnly) "Queued · Wi-Fi only" else "Queued · waiting for a download slot"
         return when (item.status) {
             DownloadStatus.Downloading -> {
                 val downloaded = formatBytes(item.downloadedBytes)

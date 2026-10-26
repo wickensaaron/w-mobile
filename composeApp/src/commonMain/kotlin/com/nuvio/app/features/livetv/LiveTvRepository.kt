@@ -29,6 +29,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlin.random.Random
 import kotlin.time.Clock
+import kotlin.time.TimeSource
 
 object LiveTvRepository {
     private val log = Logger.withTag("LiveTvRepository")
@@ -56,6 +57,7 @@ object LiveTvRepository {
     private var liveTvWorkEpoch = 0L
     private var catalogueNeedsRefresh = true
     private var guideNeedsRefresh = true
+    private val guideCache = LiveTvGuideMemoryCache()
 
     /** Keep account discovery active globally, but load large provider data only for the Live TV screen. */
     fun enterLiveTv() {
@@ -69,12 +71,8 @@ object LiveTvRepository {
     fun leaveLiveTv() {
         if (!liveTvForeground) return
         liveTvForeground = false
-        ++liveTvWorkEpoch
-        if (channelRefreshJob?.isActive == true) catalogueNeedsRefresh = true
-        if (guideRefreshJob?.isActive == true) guideNeedsRefresh = true
-        channelRefreshJob?.cancel()
-        guideRefreshJob?.cancel()
-        _uiState.value = _uiState.value.copy(isLoading = false, isGuideLoading = false)
+        // Finish bounded work already requested by this screen. Returning must not restart a
+        // multi-megabyte guide transfer. Account/profile/source changes still cancel it below.
     }
 
     private fun warmLiveTv() {
@@ -82,7 +80,7 @@ object LiveTvRepository {
         if (catalogueNeedsRefresh) {
             if (channelRefreshJob?.isActive != true) refresh()
         } else if (guideNeedsRefresh && _uiState.value.hasGuideSources && guideRefreshJob?.isActive != true) {
-            refreshGuide()
+            loadGuide()
         }
     }
 
@@ -113,6 +111,7 @@ object LiveTvRepository {
         playbackPreparationJob?.cancel()
         LiveTvCatchupPlaybackRegistry.clear()
         importedSources = emptyList()
+        guideCache.clear()
         ++accountSourceGeneration
         loadedAccountScope = owner
         loadedConfiguration = configuration
@@ -170,7 +169,15 @@ object LiveTvRepository {
                     loadedProfileId != profileId || ProfileRepository.activeProfileId != profileId ||
                     loadedConfiguration != configuration || ServerConfigurationRepository.active.value != configuration ||
                     accountSourceGeneration != requestedGeneration) return@launch
+                if (snapshot.providers == importedSources) {
+                    _uiState.value = _uiState.value.copy(isRestoringAccountSources = false,
+                        accountSourceErrorMessage = null)
+                    warmLiveTv()
+                    restoreAccountGuidePreferences()
+                    return@launch
+                }
                 importedSources = snapshot.providers
+                guideCache.clear()
                 ++accountSourceGeneration
                 playbackPreparationJob?.cancel()
                 channelRefreshJob?.cancel()
@@ -616,10 +623,15 @@ object LiveTvRepository {
     }
 
     fun refreshGuide() {
+        guideCache.clear()
+        loadGuide()
+    }
+
+    private fun loadGuide() {
         ensureLoaded()
         guideRefreshJob?.cancel()
-        val currentState = _uiState.value
-        val url = currentState.guideUrl
+        val state = _uiState.value
+        val url = state.guideUrl
         val sources = importedSources.filter { it.enabled && it.guideUrl().isNotBlank() }
         val owner = loadedAccountScope
         val generation = accountSourceGeneration
@@ -629,18 +641,17 @@ object LiveTvRepository {
         val workEpoch = liveTvWorkEpoch
         val version = ++guideRefreshVersion
         fun isCurrentGuide(): Boolean = version == guideRefreshVersion && generation == accountSourceGeneration &&
-            workEpoch == liveTvWorkEpoch &&
-            (sources.isEmpty() || catalogueVersion == channelRefreshVersion) && loadedProfileId == profileId &&
-            ProfileRepository.activeProfileId == profileId && loadedConfiguration == configuration &&
-            ServerConfigurationRepository.active.value == configuration && loadedAccountScope == owner &&
-            currentLiveTvAccountScope() == owner && _uiState.value.guideUrl == url
+            workEpoch == liveTvWorkEpoch && catalogueVersion == channelRefreshVersion &&
+            loadedProfileId == profileId && ProfileRepository.activeProfileId == profileId &&
+            loadedConfiguration == configuration && ServerConfigurationRepository.active.value == configuration &&
+            loadedAccountScope == owner && currentLiveTvAccountScope() == owner && _uiState.value.guideUrl == url
         if (url.isBlank() && sources.isEmpty()) {
             _uiState.value = _uiState.value.copy(programmes = emptyMap(), isGuideLoading = false,
                 guideErrorMessage = null, guideRequestFailed = false)
             guideNeedsRefresh = false
             return
         }
-        if (url.isNotBlank() && !url.startsWith("https://", ignoreCase = true) && !url.startsWith("http://", ignoreCase = true)) {
+        if (url.isNotBlank() && !url.startsWith("https://", true) && !url.startsWith("http://", true)) {
             guideNeedsRefresh = false
             _uiState.value = _uiState.value.copy(isGuideLoading = false,
                 guideErrorMessage = "Enter an HTTP or HTTPS XMLTV URL.", guideRequestFailed = true)
@@ -648,79 +659,87 @@ object LiveTvRepository {
         }
         _uiState.value = _uiState.value.copy(isGuideLoading = true, guideErrorMessage = null, guideRequestFailed = false)
         guideRefreshJob = scope.launch {
+            val started = TimeSource.Monotonic.markNow()
             try {
-                val result = withContext(Dispatchers.Default) {
-                    val projection = LiveTvGuideProjection()
-                    var failures = 0
-                    var providerFailureMessage: String? = null
-                    val channelsBySource = mutableMapOf<String, MutableList<LiveTvChannel>>()
-                    currentState.channels.forEachIndexed { index, channel ->
-                        if (index % 256 == 0) {
-                            currentCoroutineContext().ensureActive()
-                            yield()
-                        }
-                        if (owner != null && channel.accountScope == owner && channel.accountSourceGeneration == generation &&
-                            channel.playlistId != null) {
-                            channelsBySource.getOrPut(channel.playlistId) { mutableListOf() } += channel
-                        }
+                val tasks = mutableListOf<suspend () -> ImportedXmlTvResult>()
+                val taskSources = mutableListOf<ImportedLiveTvSource?>()
+                val taskChannels = mutableListOf<List<LiveTvChannel>>()
+                val cached = mutableListOf<Boolean>()
+                // Fair per-source allocations keep the total retained guide within the existing
+                // 100k-row device limit even while two parsers are active.
+                val budget = MobileLiveTvProgrammeLimit / (sources.size + if (url.isNotBlank()) 1 else 0).coerceAtLeast(1)
+                if (url.isNotBlank()) {
+                    tasks += suspend { ImportedXmlTvResult(parseXmlTvGuide(httpGetTextWithHeaders(url,
+                        mapOf("Accept" to "application/xml, text/xml, */*"))), false) }
+                    taskSources += null; taskChannels += emptyList<LiveTvChannel>(); cached += false
+                }
+                val channelsBySource = withContext(Dispatchers.Default) {
+                    state.channels.filter { it.accountScope == owner && it.accountSourceGeneration == generation }
+                        .groupBy { it.playlistId }
+                }
+                for (source in sources) {
+                    val channels = channelsBySource[source.id].orEmpty().let {
+                        if (state.accountGuideSnapshot?.preferences?.ukOnly != false) it.filter(::isExplicitUkAccountGuideChannel) else it
                     }
-                    if (url.isNotBlank()) {
-                        runCatching {
-                            parseXmlTvGuide(httpGetTextWithHeaders(url, mapOf("Accept" to "application/xml, text/xml, */*")))
-                        }.fold(onSuccess = { projection.appendManual(it) }, onFailure = {
-                            if (it is CancellationException) throw it
-                            failures++
-                        })
+                    if (channels.isEmpty()) continue
+                    val saved = owner?.let { guideCache.get(it, source, channels, budget, Clock.System.now().toEpochMilliseconds()) }
+                    tasks += suspend {
+                        saved ?: LiveTvAccountImport.providerGuide(source.guideUrl(), source.id, channels, budget,
+                            isCurrent = { isCurrentGuide() && ownsSource(source, owner, generation) })
                     }
-                    for (source in sources) {
-                        currentCoroutineContext().ensureActive()
-                        if (!isCurrentGuide() || !ownsSource(source, owner, generation)) return@withContext null
-                        val sourceChannels = channelsBySource[source.id].orEmpty().let { channels ->
-                            if (currentState.accountGuideSnapshot?.preferences?.ukOnly != false)
-                                channels.filter(::isExplicitUkAccountGuideChannel) else channels
+                    taskSources += source; taskChannels += channels; cached += (saved != null)
+                }
+                val results = MutableList<ImportedXmlTvResult?>(tasks.size) { null }
+                var failures = 0
+                var failureMessage: String? = null
+                var completed = 0
+                var firstRowsLogged = false
+                loadLiveTvSources(tasks, parallelism = 2) { index, outcome ->
+                    if (!isCurrentGuide()) throw CancellationException("Live TV guide changed")
+                    completed++
+                    outcome.fold(onSuccess = { parsed ->
+                        results[index] = parsed
+                        val source = taskSources[index]
+                        if (!cached[index] && source != null && owner != null) {
+                            guideCache.put(owner, source, taskChannels[index], budget, Clock.System.now().toEpochMilliseconds(), parsed)
                         }
-                        if (sourceChannels.isEmpty()) continue
-                        if (!projection.hasCapacity) {
-                            failures++
-                            continue
-                        }
-                        runCatching {
-                            val parsed = LiveTvAccountImport.providerGuide(source.guideUrl(), source.id, sourceChannels,
-                                projection.remainingCapacity,
-                                isCurrent = { isCurrentGuide() && ownsSource(source, owner, generation) })
-                            currentCoroutineContext().ensureActive()
-                            check(isCurrentGuide() && ownsSource(source, owner, generation)) { "Live TV guide source changed" }
-                            // Streaming rows already carry exact owned source/channel IDs. Appending
-                            // these immutable rows preserves the shared budget without a second copy.
-                            projection.appendManual(parsed.programmes)
-                            if (parsed.wasTruncated) failures++
-                        }.onFailure {
-                            if (it is CancellationException) throw it
-                            failures++
-                            if (it is LiveTvGuideLoadException) providerFailureMessage = it.userMessage
-                        }
+                        if (parsed.wasTruncated) failures++
+                    }, onFailure = { error ->
+                        failures++
+                        if (error is LiveTvGuideLoadException) failureMessage = error.userMessage
+                        log.w { "Live TV guide source failed (${error::class.simpleName})" }
+                    })
+                    val projection = withContext(Dispatchers.Default) {
+                        val merged = LiveTvGuideProjection()
+                        results.filterNotNull().forEach { merged.appendManual(it.programmes) }
+                        merged.snapshot()
                     }
-                    Triple(projection.snapshot(), failures, providerFailureMessage)
-                } ?: return@launch
-                if (isCurrentGuide()) {
-                    val (projection, failures, providerFailureMessage) = result
-                    guideNeedsRefresh = false
-                    _uiState.value = _uiState.value.copy(programmes = projection.programmes, isGuideLoading = false,
-                        guideRequestFailed = projection.programmeCount == 0 && failures > 0,
+                    if (!isCurrentGuide()) throw CancellationException("Live TV guide changed")
+                    val finished = completed == tasks.size
+                    _uiState.value = _uiState.value.copy(programmes = projection.programmes, isGuideLoading = !finished,
+                        guideRequestFailed = finished && projection.programmeCount == 0 && failures > 0,
                         guideErrorMessage = when {
-                            projection.programmeCount == 0 && failures > 0 ->
-                                providerFailureMessage ?: "Programme guide could not load. Check the provider guide in Sources, then retry."
-                            projection.programmeCount == 0 ->
-                                "No upcoming programmes matched these channels. Check their guide IDs in Sources."
-                            failures > 0 || projection.wasTruncated ->
-                                "Some programme sources failed or exceeded the device guide limit."
+                            !finished -> null
+                            projection.programmeCount == 0 && failures > 0 -> failureMessage ?: "Programme guide could not load. Check Sources, then retry."
+                            projection.programmeCount == 0 -> "No upcoming programmes matched these channels. Check their guide IDs in Sources."
+                            failures > 0 || projection.wasTruncated -> "Some programme sources failed or exceeded the device guide limit."
                             else -> null
                         })
+                    if (!firstRowsLogged && projection.programmeCount > 0) {
+                        firstRowsLogged = true
+                        log.i { "Live TV first guide rows: channels=${projection.programmes.size}, elapsedMs=${started.elapsedNow().inWholeMilliseconds}" }
+                    }
                 }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                // URLs, tokens, and server responses may appear in exception text.
+                if (isCurrentGuide()) {
+                    guideNeedsRefresh = false
+                    _uiState.value = _uiState.value.copy(isGuideLoading = false)
+                    log.i { "Live TV guide ready: sources=${tasks.size}, failed=$failures, elapsedMs=${started.elapsedNow().inWholeMilliseconds}" }
+                    // A catalogue provider may have finished while this guide was downloading.
+                    // Reuse completed feeds and load only the newly available provider channels.
+                    if (_uiState.value.channels !== state.channels) loadGuide()
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
                 log.w { "Failed to load XMLTV guide (${error::class.simpleName})" }
                 if (isCurrentGuide()) {
                     guideNeedsRefresh = false
@@ -771,6 +790,8 @@ object LiveTvRepository {
         val generation = accountSourceGeneration
         val workEpoch = liveTvWorkEpoch
         val playlists = currentState.playlists
+        val profileId = loadedProfileId
+        val configuration = loadedConfiguration
         if (!currentState.hasPlaylist) {
             catalogueNeedsRefresh = false
             _uiState.value = _uiState.value.copy(
@@ -801,131 +822,80 @@ object LiveTvRepository {
 
         _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
         channelRefreshJob = scope.launch {
-            val loadedChannels = mutableListOf<LiveTvChannel>()
-            val failedPlaylistNames = mutableListOf<String>()
-            fun appendLocalChannels(channels: List<LiveTvChannel>) {
-                val remaining = (MobileLiveTvCatalogueLimit - loadedChannels.size).coerceAtLeast(0)
-                if (channels.size > remaining) failedPlaylistNames += "Device catalogue limit"
-                loadedChannels += channels.take(remaining)
-            }
-
+            val started = TimeSource.Monotonic.markNow()
+            fun isCurrentCatalogue() = version == channelRefreshVersion && generation == accountSourceGeneration &&
+                workEpoch == liveTvWorkEpoch && loadedAccountScope == owner && currentLiveTvAccountScope() == owner &&
+                loadedProfileId == profileId && ProfileRepository.activeProfileId == profileId &&
+                loadedConfiguration == configuration && ServerConfigurationRepository.active.value == configuration
+            val tasks = mutableListOf<suspend () -> List<LiveTvChannel>>()
             enabledPlaylists.forEach { playlist ->
-                val result = runCatching {
+                tasks += suspend {
                     val payload = when (playlist.type) {
-                        LiveTvPlaylistType.Url -> withContext(Dispatchers.Default) {
-                            httpGetTextWithHeaders(playlist.source, mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
-                        }
+                        LiveTvPlaylistType.Url -> httpGetTextWithHeaders(playlist.source,
+                            mapOf("Accept" to "application/x-mpegURL, text/plain, */*"))
                         LiveTvPlaylistType.LocalFile -> playlist.source
                     }
                     parseM3uPlaylist(payload, playlist)
                 }
-
-                result.fold(
-                    onSuccess = ::appendLocalChannels,
-                    onFailure = { error ->
-                        if (error is CancellationException) throw error
-                        failedPlaylistNames += playlist.name
-                        // Exception messages can contain password-bearing playlist URLs.
-                        log.w { "Failed to load a live TV playlist (${error::class.simpleName})" }
-                    },
-                )
             }
-
-            if (currentState.xtreamSettings.isConfigured && currentState.xtreamSettings.isEnabled) {
-                runCatching { fetchXtreamChannels(currentState.xtreamSettings) }.fold(
-                    onSuccess = ::appendLocalChannels,
-                    onFailure = { error ->
-                        if (error is CancellationException) throw error
-                        failedPlaylistNames += "Xtream"
-                        log.w { "Failed to load Xtream provider (${error::class.simpleName})" }
-                    },
-                )
-            }
-            if (currentState.stalkerSettings.isConfigured && currentState.stalkerSettings.isEnabled) {
-                runCatching { fetchStalkerChannels(currentState.stalkerSettings) }.fold(
-                    onSuccess = ::appendLocalChannels,
-                    onFailure = { error ->
-                        if (error is CancellationException) throw error
-                        failedPlaylistNames += "Stalker Portal"
-                        log.w { "Failed to load Stalker provider (${error::class.simpleName})" }
-                    },
-                )
-            }
-
+            if (currentState.xtreamSettings.isConfigured && currentState.xtreamSettings.isEnabled)
+                tasks += suspend { fetchXtreamChannels(currentState.xtreamSettings) }
+            if (currentState.stalkerSettings.isConfigured && currentState.stalkerSettings.isEnabled)
+                tasks += suspend { fetchStalkerChannels(currentState.stalkerSettings) }
             for (source in sources) {
-                if (!ownsSource(source, owner, generation)) return@launch
-                if (loadedChannels.size >= MobileLiveTvCatalogueLimit) {
-                    failedPlaylistNames += "Device catalogue limit"
-                    continue
-                }
-                val remaining = MobileLiveTvCatalogueLimit - loadedChannels.size
-                runCatching {
-                    withContext(Dispatchers.Default) {
-                        currentCoroutineContext().ensureActive()
-                        check(ownsSource(source, owner, generation)) { "Live TV source changed" }
-                        val channels = when (source.type) {
-                            "XTREAM" -> fetchXtreamChannels(source.xtreamSettings(), source) { ownsSource(source, owner, generation) }
-                            else -> {
-                                val payload = LiveTvAccountImport.providerText(source.endpoint,
-                                    mapOf("Accept" to "application/x-mpegURL, text/plain, */*"),
-                                    isCurrent = { ownsSource(source, owner, generation) })
-                                val context = currentCoroutineContext()
-                                parseImportedLiveTvPlaylist(payload, source, checkActive = { context.ensureActive() })
-                            }
+                tasks += suspend {
+                    check(isCurrentCatalogue() && ownsSource(source, owner, generation)) { "Live TV source changed" }
+                    val channels = when (source.type) {
+                        "XTREAM" -> fetchXtreamChannels(source.xtreamSettings(), source) { isCurrentCatalogue() && ownsSource(source, owner, generation) }
+                        else -> {
+                            val payload = LiveTvAccountImport.providerText(source.endpoint,
+                                mapOf("Accept" to "application/x-mpegURL, text/plain, */*"),
+                                isCurrent = { isCurrentCatalogue() && ownsSource(source, owner, generation) })
+                            val context = currentCoroutineContext()
+                            parseImportedLiveTvPlaylist(payload, source, checkActive = { context.ensureActive() })
                         }
-                        currentCoroutineContext().ensureActive()
-                        check(ownsSource(source, owner, generation)) { "Live TV source changed" }
-                        require(channels.size <= remaining) { "Live TV catalogue exceeds device limit" }
-                        val ownedChannels = ArrayList<LiveTvChannel>(channels.size)
-                        channels.forEachIndexed { index, channel ->
-                            if (index % 256 == 0) {
-                                currentCoroutineContext().ensureActive()
-                                yield()
-                            }
-                            ownedChannels += channel.copy(accountScope = owner, accountSourceGeneration = generation)
-                        }
-                        ownedChannels.toList()
                     }
-                }.fold(onSuccess = {
-                    if (ownsSource(source, owner, generation)) loadedChannels += it
-                }, onFailure = {
-                    if (it is CancellationException) throw it
-                    failedPlaylistNames += "Account source"
-                    log.w { "Could not load an account Live TV source (${it::class.simpleName})" }
+                    currentCoroutineContext().ensureActive()
+                    check(isCurrentCatalogue() && ownsSource(source, owner, generation)) { "Live TV source changed" }
+                    channels.map { it.copy(accountScope = owner, accountSourceGeneration = generation) }
+                }
+            }
+            val loaded = MutableList<List<LiveTvChannel>?>(tasks.size) { null }
+            var failed = 0
+            var completed = 0
+            var firstChannelsLogged = false
+            loadLiveTvSources(tasks) { index, outcome ->
+                if (!isCurrentCatalogue()) throw CancellationException("Live TV catalogue changed")
+                completed++
+                outcome.fold(onSuccess = { loaded[index] = it }, onFailure = {
+                    failed++
+                    log.w { "Live TV channel source failed (${it::class.simpleName})" }
                 })
-            }
-
-            val channels = withContext(Dispatchers.Default) {
-                val seen = mutableSetOf<String>()
-                val result = ArrayList<LiveTvChannel>(loadedChannels.size)
-                loadedChannels.forEachIndexed { index, channel ->
-                    if (index % 256 == 0) {
-                        currentCoroutineContext().ensureActive()
-                        yield()
-                    }
-                    if (result.size < MobileLiveTvCatalogueLimit &&
-                        seen.add(if (channel.accountScope != null) channel.id else "local:${channel.streamUrl}")) {
-                        result += channel.copy(sourceLoadGeneration = version)
-                    }
+                val channels = withContext(Dispatchers.Default) { mergeLiveTvChannelLoads(loaded, version) }
+                if (!isCurrentCatalogue()) throw CancellationException("Live TV catalogue changed")
+                val finished = completed == tasks.size
+                catalogueNeedsRefresh = !finished
+                _uiState.value = _uiState.value.copy(playlistUrl = playlists.firstEnabledUrlSource(),
+                    playlists = playlists, channels = channels, isLoading = !finished,
+                    errorMessage = when {
+                        !finished -> null
+                        channels.isEmpty() && failed > 0 -> "Playlist could not be loaded."
+                        channels.isEmpty() -> "No channels found in these playlists."
+                        failed > 0 || loaded.filterNotNull().sumOf { it.size } > MobileLiveTvCatalogueLimit -> "Some live TV sources could not be loaded."
+                        else -> null
+                    })
+                if (channels.isNotEmpty() && !firstChannelsLogged) {
+                    firstChannelsLogged = true
+                    log.i { "Live TV first channels: count=${channels.size}, elapsedMs=${started.elapsedNow().inWholeMilliseconds}" }
                 }
-                result.toList()
+                // Start the first usable provider's guide immediately. A provider that times out
+                // must not hold every other channel behind its catalogue/guide request.
+                if (_uiState.value.hasGuideSources && guideRefreshJob?.isActive != true) loadGuide()
             }
-            if (version != channelRefreshVersion || generation != accountSourceGeneration ||
-                workEpoch != liveTvWorkEpoch || loadedAccountScope != owner || currentLiveTvAccountScope() != owner) return@launch
-            catalogueNeedsRefresh = false
-            _uiState.value = _uiState.value.copy(
-                playlistUrl = playlists.firstEnabledUrlSource(),
-                playlists = playlists,
-                channels = channels,
-                isLoading = false,
-                errorMessage = when {
-                    channels.isEmpty() && failedPlaylistNames.isNotEmpty() -> "Playlist could not be loaded."
-                    channels.isEmpty() -> "No channels found in these playlists."
-                    failedPlaylistNames.isNotEmpty() -> "Some live TV sources could not be loaded."
-                    else -> null
-                },
-            )
-            if (_uiState.value.hasGuideSources) refreshGuide()
+            if (isCurrentCatalogue()) {
+                catalogueNeedsRefresh = false
+                log.i { "Live TV channels ready: sources=${tasks.size}, failed=$failed, elapsedMs=${started.elapsedNow().inWholeMilliseconds}" }
+            }
         }
     }
 

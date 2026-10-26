@@ -183,7 +183,8 @@ internal object LiveTvAccountImport {
     }
 
     /**
-     * Identity encoding is requested to avoid invisible engine decoding. If the server ignores it,
+     * Gzip is requested to avoid transferring the full uncompressed multi-megabyte feed. If an
+     * engine transparently decodes it,
      * the delivered-byte budget counts whatever the engine actually exposes (compressed OR already
      * decoded); a second independent budget counts XML bytes after optional gzip magic detection.
      * No response string, full byte array, disk file or retry is used for this guide lane.
@@ -216,7 +217,7 @@ internal object LiveTvAccountImport {
                         method = HttpMethod.Get
                         header("User-Agent", "WTV/1.0")
                         header("Accept", "application/xml, text/xml, */*")
-                        header("Accept-Encoding", "identity")
+                        header("Accept-Encoding", "gzip")
                         timeout { requestTimeoutMillis = 180_000; connectTimeoutMillis = 15_000; socketTimeoutMillis = 30_000 }
                     }.execute { response ->
                         collector.checkCurrent()

@@ -37,6 +37,19 @@ data class StreamingApiConfig(
     val normalizedCountry: String get() = country.trim().lowercase().takeIf { it.matches(Regex("[a-z]{2}")) } ?: "gb"
 }
 
+internal fun StreamingApiConfig.toCredentialValue(): String =
+    if (!isConfigured) "" else Json.encodeToString(StreamingApiConfig.serializer(), this)
+
+internal fun streamingConfigFromCredential(value: String): StreamingApiConfig {
+    if (value.isBlank()) return StreamingApiConfig()
+    val config = Json { ignoreUnknownKeys = true }.decodeFromString(StreamingApiConfig.serializer(), value)
+    return config.copy(
+        apiKey = config.apiKey.trim(),
+        source = if (config.source == "rapidapi") "rapidapi" else "direct",
+        country = config.normalizedCountry,
+    )
+}
+
 internal expect object StreamingAvailabilityStorage {
     fun loadConfig(): String?
     fun saveConfig(value: String)
@@ -54,6 +67,11 @@ object StreamingAvailabilityRepository {
     private val _config = MutableStateFlow(loadConfig())
     val config = _config.asStateFlow()
     private val pageCache = mutableMapOf<String, CachedPage>()
+
+    fun onProfileChanged() {
+        _config.value = loadConfig()
+        pageCache.clear()
+    }
 
     fun saveConfig(apiKey: String, source: String, country: String) {
         val value = StreamingApiConfig(

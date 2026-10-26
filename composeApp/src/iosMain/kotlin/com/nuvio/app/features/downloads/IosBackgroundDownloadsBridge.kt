@@ -18,18 +18,11 @@ private const val cancelNotification = "WMediaBackgroundDownloadCancel"
 private const val pauseNotification = "WMediaBackgroundDownloadPause"
 internal const val discardNotification = "WMediaBackgroundDownloadDiscard"
 
-@Serializable
-private data class BackgroundDownloadStart(
-    val id: String,
-    val url: String,
-    val fileName: String,
-    val headers: Map<String, String>,
-)
-
 private data class BackgroundDownloadCallbacks(
     val onProgress: (Long, Long?) -> Unit,
     val onSuccess: (String, Long?) -> Unit,
     val onFailure: (String) -> Unit,
+    val onQueueState: (Boolean) -> Unit,
 )
 
 /** The native app owns the background URLSession and calls these exported functions on the main queue. */
@@ -45,9 +38,10 @@ internal object IosBackgroundDownloadsBridge {
         onProgress: (Long, Long?) -> Unit,
         onSuccess: (String, Long?) -> Unit,
         onFailure: (String) -> Unit,
+        onQueueState: (Boolean) -> Unit,
     ): DownloadsTaskHandle {
         val id = request.item.id
-        callbacks[id] = BackgroundDownloadCallbacks(onProgress, onSuccess, onFailure)
+        callbacks[id] = BackgroundDownloadCallbacks(onProgress, onSuccess, onFailure, onQueueState)
         val destination = NSURL.fileURLWithPath(
             downloadsDirectoryPathForBackground() + "/" + request.destinationFileName,
         ).absoluteString.orEmpty()
@@ -56,11 +50,12 @@ internal object IosBackgroundDownloadsBridge {
             runCatching { DownloadSubtitles.prepare(request.item, destination) }
         }
         val payload = json.encodeToString(
-            BackgroundDownloadStart(
+            IosBackgroundDownloadStart(
                 id = id,
                 url = request.sourceUrl,
                 fileName = request.destinationFileName,
                 headers = request.sourceHeaders,
+                wifiOnly = request.item.wifiOnly,
             ),
         )
         NSNotificationCenter.defaultCenter.postNotificationName(startNotification, payload)
@@ -96,6 +91,10 @@ internal object IosBackgroundDownloadsBridge {
         return item
     }
 
+    fun queueState(id: String, queued: Boolean) {
+        callbacks[id]?.onQueueState(queued)
+    }
+
     fun progress(id: String, downloadedBytes: Long, totalBytes: Long) {
         callbacks[id]?.onProgress(downloadedBytes, totalBytes.takeIf { it > 0L })
     }
@@ -112,6 +111,9 @@ internal object IosBackgroundDownloadsBridge {
 }
 
 /** Called by the Swift URLSession delegate. Never include source URLs in these callbacks. */
+fun iosBackgroundDownloadQueueState(id: String, queued: Boolean) =
+    IosBackgroundDownloadsBridge.queueState(id, queued)
+
 fun iosBackgroundDownloadProgress(id: String, downloadedBytes: Long, totalBytes: Long) =
     IosBackgroundDownloadsBridge.progress(id, downloadedBytes, totalBytes)
 

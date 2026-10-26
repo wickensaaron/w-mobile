@@ -70,12 +70,17 @@ internal actual object DownloadsPlatformDownloader {
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: () -> Unit,
-    ): DownloadsTaskHandle = IosBackgroundDownloadsBridge.start(
+        onQueueState: (Boolean) -> Unit,
+    ): DownloadsTaskHandle {
+        onQueueState(true)
+        return IosBackgroundDownloadsBridge.start(
         request = request,
         onProgress = onProgress,
         onSuccess = onSuccess,
         onFailure = onFailure,
+        onQueueState = onQueueState,
     )
+    }
 
     actual fun restoreItem(item: DownloadItem): DownloadItem =
         IosBackgroundDownloadsBridge.restore(item)

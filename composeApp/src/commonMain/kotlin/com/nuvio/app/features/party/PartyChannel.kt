@@ -12,6 +12,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.coroutines.sync.Mutex
@@ -60,14 +62,18 @@ internal class PartyChannel(
         created.subscribe(blockUntilSubscribed = false)
     }
 
-    suspend fun send(event: String, payload: JsonObject) {
-        if (event !in setOf("state", "status", "state_request")) return
-        if (!isConnected) return
-        sendMutex.withLock {
+    suspend fun send(event: String, payload: JsonObject): PartySnapshot? {
+        if (event !in setOf("state", "status", "state_request")) return null
+        if (!isConnected) return null
+        return sendMutex.withLock {
             val snapshot = PartyApi.event(partyId, memberId, event, payload)
+            snapshot.error?.let { code ->
+                receive?.invoke("session_error", buildJsonObject { put("error", code) })
+            }
             snapshot.party?.playback?.let { playback ->
                 receive?.invoke("state", PartyApi.json.encodeToJsonElement(PartyPlayback.serializer(), playback).jsonObject)
             }
+            snapshot
         }
     }
 

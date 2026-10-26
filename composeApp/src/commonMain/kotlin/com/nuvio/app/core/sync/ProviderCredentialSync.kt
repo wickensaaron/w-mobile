@@ -15,6 +15,10 @@ import com.nuvio.app.features.player.PlayerSettingsUiState
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.tmdb.TmdbSettings
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
+import com.nuvio.app.features.streaming.StreamingApiConfig
+import com.nuvio.app.features.streaming.StreamingAvailabilityRepository
+import com.nuvio.app.features.streaming.streamingConfigFromCredential
+import com.nuvio.app.features.streaming.toCredentialValue
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -123,14 +127,14 @@ object ProviderCredentialSync {
             throw error
         } catch (error: Throwable) {
             AuthRepository.signOutIfSessionInvalid(error, "Provider credential sync")
-            log.e(error) { "Provider credential sync failed for profile $profileId" }
+            log.e { "Provider credential sync failed for profile $profileId (${error::class.simpleName})" }
             throw error
         }
     }
 
     private suspend fun pushSnapshot(snapshot: ProviderCredentialSnapshot) {
         SupabaseProvider.client.postgrest.rpc(
-            function = "sync_push_provider_credentials",
+            function = "w_sync_push_provider_credentials",
             parameters = credentialParams(snapshot),
         )
         log.d { "Pushed ${snapshot.values.size} credentials for profile ${snapshot.profileId}" }
@@ -141,7 +145,7 @@ object ProviderCredentialSync {
             put("p_profile_id", profileId)
         }
         return SupabaseProvider.client.postgrest
-            .rpc("sync_pull_provider_credentials", params)
+            .rpc("w_sync_pull_provider_credentials", params)
             .decodeList()
     }
 
@@ -169,7 +173,8 @@ object ProviderCredentialSync {
             ProviderCredentialInputs(debrid, tmdb, mdbList, player)
         },
         WCoreConnectionRepository.configuredOrigin,
-    ) { inputs, wCoreOrigin ->
+        StreamingAvailabilityRepository.config,
+    ) { inputs, wCoreOrigin, streaming ->
         buildSnapshot(
             profileId = ProfileRepository.activeProfileId,
             debrid = inputs.debrid,
@@ -177,6 +182,7 @@ object ProviderCredentialSync {
             mdbList = inputs.mdbList,
             player = inputs.player,
             wCoreOrigin = wCoreOrigin,
+            streaming = streaming,
         )
     }
 
@@ -189,6 +195,7 @@ object ProviderCredentialSync {
             mdbList = MdbListSettingsRepository.snapshot(),
             player = PlayerSettingsRepository.uiState.value,
             wCoreOrigin = WCoreConnectionRepository.configuredOrigin.value,
+            streaming = StreamingAvailabilityRepository.config.value,
         )
         check(ProfileRepository.activeProfileId == profileId)
         return snapshot
@@ -201,6 +208,7 @@ object ProviderCredentialSync {
         mdbList: MdbListSettings,
         player: PlayerSettingsUiState,
         wCoreOrigin: String? = null,
+        streaming: StreamingApiConfig = StreamingApiConfig(),
     ): ProviderCredentialSnapshot = ProviderCredentialSnapshot(
         profileId = profileId,
         values = buildList {
@@ -214,6 +222,7 @@ object ProviderCredentialSync {
                 )
             }
             add(ProviderCredentialValue(ProviderCredentialIds.TMDB, PROVIDER_API_KEY_FIELD, tmdb.apiKey.trim()))
+            add(ProviderCredentialValue(ProviderCredentialIds.STREAMING_AVAILABILITY, "config", streaming.toCredentialValue()))
             add(ProviderCredentialValue(ProviderCredentialIds.MDBLIST, PROVIDER_API_KEY_FIELD, mdbList.apiKey.trim()))
             add(
                 ProviderCredentialValue(
@@ -243,6 +252,9 @@ object ProviderCredentialSync {
         snapshot: ProviderCredentialSnapshot,
         expectedScope: ProviderCredentialScope,
     ) {
+        // Validate the entire streaming payload before applying any remote credential.
+        val streaming = snapshot.values.firstOrNull { it.provider == ProviderCredentialIds.STREAMING_AVAILABILITY }
+            ?.let { streamingConfigFromCredential(it.value) }
         snapshot.values.forEach { credential ->
             requireCurrentScope(expectedScope)
             when {
@@ -254,6 +266,10 @@ object ProviderCredentialSync {
                 }
                 credential.provider == ProviderCredentialIds.TMDB -> {
                     TmdbSettingsRepository.setApiKey(credential.value)
+                }
+                credential.provider == ProviderCredentialIds.STREAMING_AVAILABILITY -> {
+                    requireNotNull(streaming)
+                    StreamingAvailabilityRepository.saveConfig(streaming.apiKey, streaming.source, streaming.country)
                 }
                 credential.provider == ProviderCredentialIds.MDBLIST -> {
                     MdbListSettingsRepository.setApiKey(credential.value)
@@ -308,7 +324,7 @@ object ProviderCredentialSync {
                 throw error
             } catch (error: Throwable) {
                 AuthRepository.signOutIfSessionInvalid(error, "Provider credential push")
-                log.e(error) { "Failed to push provider credentials for profile ${snapshot.profileId}" }
+                log.e { "Failed to push provider credentials for profile ${snapshot.profileId} (${error::class.simpleName})" }
             }
         }
     }

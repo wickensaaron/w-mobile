@@ -24,10 +24,10 @@ val localProps = Properties().apply {
     val propsFile = rootProject.file("local.properties")
     if (propsFile.exists()) propsFile.inputStream().use { load(it) }
 }
-val releaseStoreFile = localProps.getProperty("NUVIO_RELEASE_STORE_FILE")?.takeIf { it.isNotBlank() }
-val releaseStorePassword = localProps.getProperty("NUVIO_RELEASE_STORE_PASSWORD")?.takeIf { it.isNotBlank() }
-val releaseKeyAlias = localProps.getProperty("NUVIO_RELEASE_KEY_ALIAS")?.takeIf { it.isNotBlank() }
-val releaseKeyPassword = localProps.getProperty("NUVIO_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotBlank() }
+val releaseStoreFile = (providers.environmentVariable("NUVIO_RELEASE_STORE_FILE").orNull ?: localProps.getProperty("NUVIO_RELEASE_STORE_FILE"))?.takeIf { it.isNotBlank() }
+val releaseStorePassword = (providers.environmentVariable("NUVIO_RELEASE_STORE_PASSWORD").orNull ?: localProps.getProperty("NUVIO_RELEASE_STORE_PASSWORD"))?.takeIf { it.isNotBlank() }
+val releaseKeyAlias = (providers.environmentVariable("NUVIO_RELEASE_KEY_ALIAS").orNull ?: localProps.getProperty("NUVIO_RELEASE_KEY_ALIAS"))?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = (providers.environmentVariable("NUVIO_RELEASE_KEY_PASSWORD").orNull ?: localProps.getProperty("NUVIO_RELEASE_KEY_PASSWORD"))?.takeIf { it.isNotBlank() }
 val releaseKeystore = releaseStoreFile?.let(rootProject::file)
 fun envOrLocalProperty(key: String): String? =
     providers.environmentVariable(key).orNull?.trim()?.takeIf { it.isNotBlank() }
@@ -47,6 +47,15 @@ val releaseAppVersionCode = readXcconfigValue(appVersionConfigFile, "CURRENT_PRO
 val requestedTaskNames = gradle.startParameter.taskNames.map { it.substringAfterLast(':') }
 val buildsReleaseApks = requestedTaskNames.any {
     it.startsWith("assemble", ignoreCase = true) && it.endsWith("Release", ignoreCase = true)
+}
+val requestedAndroidAbi = providers.gradleProperty("nuvio.android.abi").orNull?.also {
+    require(it in setOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")) { "Unsupported Android ABI: $it" }
+}
+
+if (buildsReleaseApks) {
+    require(releaseKeystore?.isFile == true && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
+        "Release signing is missing. Configure NUVIO_RELEASE_STORE_FILE, NUVIO_RELEASE_STORE_PASSWORD, NUVIO_RELEASE_KEY_ALIAS and NUVIO_RELEASE_KEY_PASSWORD."
+    }
 }
 
 android {
@@ -72,6 +81,9 @@ android {
         versionCode = releaseAppVersionCode
         versionName = releaseAppVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            if (!buildsReleaseApks) requestedAndroidAbi?.let { abiFilters += it }
+        }
     }
 
     flavorDimensions += "distribution"
@@ -113,7 +125,7 @@ android {
         abi {
             isEnable = buildsReleaseApks
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            include(*(requestedAndroidAbi?.let { arrayOf(it) } ?: arrayOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")))
             isUniversalApk = false
         }
     }
@@ -168,6 +180,14 @@ sentry {
     }
     tracingInstrumentation {
         enabled.set(false)
+    }
+}
+
+// A local release without Sentry upload credentials still retains its R8 mapping locally.
+// The optional upload task otherwise invokes sentry-cli even with autoUploadProguardMapping=false.
+tasks.configureEach {
+    if (!sentryMappingUploadEnabled && name.startsWith("uploadSentryProguardMappings")) {
+        enabled = false
     }
 }
 

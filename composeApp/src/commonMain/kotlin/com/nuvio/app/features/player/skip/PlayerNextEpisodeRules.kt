@@ -39,10 +39,11 @@ object PlayerNextEpisodeRules {
         if (outroSegments.isNotEmpty()) {
             if (durationMs <= 0L) return false
 
-            // Use the same post-credits detection as the skip button so the
-            // next-episode card never appears over a post-credits scene.
+            // Only an explicit post-credits marker should delay the next-episode prompt.
             val latestOutro = outroSegments.maxByOrNull { it.endTime }
-            val postCreditsScene = latestOutro?.findFollowingPostCreditsScene(skipIntervals, durationMs)
+            val postCreditsScene = latestOutro?.findFollowingPostCreditsScene(
+                skipIntervals.filter { it.type == "post-credits" }, durationMs
+            )?.takeIf { it.provider != "heuristic" }
 
             if (postCreditsScene != null) {
                 val sceneEndMs = (postCreditsScene.endTime * 1_000.0).toLong()
@@ -50,16 +51,7 @@ object PlayerNextEpisodeRules {
                 val userTriggerMs = userThresholdPositionMs(
                     durationMs, thresholdMode, thresholdPercent, thresholdMinutesBeforeEnd
                 )
-                val isHeuristic = postCreditsScene.provider == "heuristic"
-                val sceneDurationMs = sceneEndMs - (postCreditsScene.startTime * 1_000.0).toLong()
-                val userThresholdFromEndMs = durationMs - userTriggerMs
-                return if (isHeuristic && sceneDurationMs < userThresholdFromEndMs) {
-                    false
-                } else if (isHeuristic) {
-                    positionMs >= userTriggerMs
-                } else {
-                    positionMs >= maxOf(sceneEndMs, userTriggerMs)
-                }
+                return positionMs >= maxOf(sceneEndMs, userTriggerMs)
             }
 
             val latestOutroEndMs = (outroSegments.maxOf { it.endTime } * 1_000.0).toLong()

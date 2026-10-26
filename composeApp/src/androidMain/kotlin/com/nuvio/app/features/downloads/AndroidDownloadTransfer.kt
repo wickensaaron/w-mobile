@@ -62,7 +62,10 @@ internal suspend fun transferAndroidDownload(
                         restarted = true
                         return@use
                     }
-                    if (!response.isSuccessful) throw DownloadHttpException(response.code)
+                    if (response.code != 200 && response.code != 206) throw DownloadHttpException(response.code)
+                    check(isDownloadMediaContentType(response.header("Content-Type"))) {
+                        "The source returned an error page instead of a media file. Choose a fresh source."
+                    }
                     val range = response.header("Content-Range")?.let(::parseDownloadContentRange)
                     val resumed = response.code == 206
                     if (resumed && (range == null || range.first != offset)) {
@@ -92,7 +95,7 @@ internal suspend fun transferAndroidDownload(
                         }
                     }
                     ensureActive()
-                    if (totalBytes != null && downloaded != totalBytes) {
+                    if (downloaded <= 0L || (totalBytes != null && downloaded != totalBytes)) {
                         throw IOException("Download ended before all bytes were received")
                     }
                     return@async partial

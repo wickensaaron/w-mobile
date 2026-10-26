@@ -77,7 +77,22 @@ actual fun HidePlayerSystemBars() {
 }
 
 @Composable
-actual fun EnterImmersivePlayerMode(keepScreenAwake: Boolean) = Unit
+actual fun EnterImmersivePlayerMode(keepScreenAwake: Boolean) {
+    val activity = LocalContext.current.findActivity() ?: return
+    val view = LocalView.current
+    // The active player may live in a fullscreen dialog with its own window. Keep the
+    // visible playback window awake independently of video-surface visibility/recreation.
+    val window = (view.parent as? DialogWindowProvider)?.window ?: activity.window
+    DisposableEffect(window, keepScreenAwake) {
+        val alreadyKeptAwake = window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0
+        if (keepScreenAwake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            if (keepScreenAwake && !alreadyKeptAwake) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
+    }
+}
 
 @Composable
 actual fun ManagePlayerPictureInPicture(

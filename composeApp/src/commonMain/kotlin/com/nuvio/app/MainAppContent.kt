@@ -1119,13 +1119,39 @@ internal fun MainAppContent(
                 )
             }
 
+        var downloadSheetLaunch by remember(profileState.activeProfile?.id, profileState.activeProfile?.userId) {
+            mutableStateOf<StreamLaunch?>(null)
+        }
+        downloadSheetLaunch?.let { request ->
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { downloadSheetLaunch = null },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxSize(0.94f),
+                    shape = MaterialTheme.shapes.extraLarge,
+                ) {
+                    com.nuvio.app.features.downloads.DownloadSourceScreen(
+                        launch = request,
+                        onBack = { downloadSheetLaunch = null },
+                        onOpenDownloads = {
+                            downloadSheetLaunch = null
+                            navController.navigate(DownloadsLibraryRoute(title = downloadsTitle, showActive = true))
+                        },
+                        onOpenSavedDownloads = {
+                            downloadSheetLaunch = null
+                            navController.navigate(DownloadsLibraryRoute(title = downloadsTitle, showActive = false))
+                        },
+                    )
+                }
+            }
+        }
         val onDownload: ContentPlayAction =
             { type, videoId, parentMetaId, parentMetaType, title, logo, poster, background, seasonNumber, episodeNumber, episodeTitle, episodeThumbnail, pauseDescription, _ ->
                 if (!PlaybackAvailability.current().canStream(type, videoId)) {
                     NuvioToastController.show(playbackUnavailableMessage)
                 } else {
-                    val streamLaunchId = StreamLaunchStore.put(
-                        StreamLaunch(
+                    downloadSheetLaunch = StreamLaunch(
                             profileId = activePlaybackProfileId,
                             type = type,
                             videoId = videoId,
@@ -1144,9 +1170,7 @@ internal fun MainAppContent(
                             downloadSelectionMode = true,
                             downloadOwnerUserId = ProfileRepository.state.value.activeProfile?.userId,
                             downloadOwnerProfileId = ProfileRepository.state.value.activeProfile?.id,
-                        ),
-                    )
-                    navController.navigate(StreamRoute(launchId = streamLaunchId, title = downloadPickerTitle))
+                        )
                 }
             }
         LaunchedEffect(Unit) {

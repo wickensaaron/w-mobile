@@ -205,6 +205,8 @@ internal class PlayerScreenRuntime(
     var nextEpisodePreloadJob by mutableStateOf<Job?>(null)
     var nextEpisodePreloadTriggered by mutableStateOf(false)
     var pendingP2pSwitch by mutableStateOf<PendingPlayerP2pSwitch?>(null)
+    val sourceSelectionGate = PlayerSourceRequestGate()
+    var sourceSelectionJob: Job? = null
     var credentialRefreshJob by mutableStateOf<Job?>(null)
     var credentialRefreshAttemptedSourceUrl by mutableStateOf<String?>(null)
 

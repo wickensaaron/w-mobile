@@ -21,6 +21,8 @@ import com.nuvio.app.features.streams.balancedAutoPlayEnabled
 import com.nuvio.app.features.streams.verifyBalancedAutoPlay
 import com.nuvio.app.features.streams.WCorePlaybackSources
 import com.nuvio.app.features.streams.StreamItem
+import com.nuvio.app.features.servers.ServerPlayback
+import kotlinx.coroutines.CancellationException
 import com.nuvio.app.features.watching.domain.isShortPlaceholderDuration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -378,9 +380,11 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 val resolved = if (candidate.isWCoreStream) WCorePlaybackSources.refreshSelected(candidate)
                     else (DirectDebridPlaybackResolver.resolveToPlayableStream(candidate, nextVideo.season, nextVideo.episode)
                         as? DirectDebridPlayableResult.Success)?.stream
-                val url = resolved?.playableDirectUrl ?: continue
+                val playable = prepareNextEpisodeServerStream(resolved)
+                val url = playable?.playableDirectUrl ?: continue
                 if (!inspected.add(url)) continue
-                if (verifyBalancedAutoPlay(resolved)) { selected = resolved; break }
+                if (verifyBalancedAutoPlay(playable)) { selected = playable; break }
+                if (playable.serverTarget != null) ServerPlayback.stop(url)
             }
             if (selected == null) NuvioToastController.show(BalancedAutoPlayPolicy.FALLBACK_MESSAGE)
         }

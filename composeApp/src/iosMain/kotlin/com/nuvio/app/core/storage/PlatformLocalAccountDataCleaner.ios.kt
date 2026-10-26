@@ -13,6 +13,7 @@ internal actual object PlatformLocalAccountDataCleaner {
         "avatar_catalog_payload",
         "anonymous_user_id",
         "member_access_payload",
+        "streaming_availability_config",
     )
     private val profilePinCachePrefixes = listOf("profile_pin_cache_")
     private val profileIndexedPrefixes = listOf(
@@ -27,6 +28,8 @@ internal actual object PlatformLocalAccountDataCleaner {
     )
     private val profileScopedBaseKeys = listOf(
         "episode_shuffle",
+        "streaming_availability_config",
+        "tmdb_api_key",
         "catalog_settings_payload",
         "discover_catalog_key",
         "continue_watching_preferences_payload",

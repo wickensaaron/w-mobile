@@ -52,6 +52,8 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
     var lastDismissed by remember { mutableStateOf<String?>(null) }
     var picks by remember { mutableStateOf(emptyList<ForYouPick>()) }
     var loading by remember { mutableStateOf(false) }
+    var lookupFailed by remember { mutableStateOf(false) }
+    val hasTmdbKey = TmdbSettingsRepository.effectiveApiKey().isNotBlank()
     var retry by remember { mutableStateOf(0) }
     val completed = remember(progress.entries) { progress.entries.filter { it.isCompleted } }
     val seeds = remember(library.items, watched.items, completed) {
@@ -76,14 +78,15 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
     }
     val ownsInputs = LibraryRepository.isLoadedForProfile(profileId) && WatchedRepository.isLoadedForProfile(profileId) &&
         WatchProgressRepository.isLoadedForProfile(profileId)
-    ScreenActivityEffect(seeds, excluded, ownsInputs, library, watched, progress, settings.language, settings.apiKey, retry) { active ->
+    ScreenActivityEffect(seeds, excluded, ownsInputs, library, watched, progress, settings.language, settings.apiKey, hasTmdbKey, retry) { active ->
         if (!active) return@ScreenActivityEffect
         val librarySnapshot = library
         val watchedSnapshot = watched
         val progressSnapshot = progress
         picks = emptyList()
         loading = false
-        if (seeds.isEmpty() || !ownsInputs) return@ScreenActivityEffect
+        lookupFailed = false
+        if (seeds.isEmpty() || !ownsInputs || !hasTmdbKey) return@ScreenActivityEffect
         loading = true
         try {
             // Debounce repository updates during profile/provider transitions.
@@ -97,9 +100,9 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
                 for (seed in seeds) {
                     ensureActive()
                     val mediaType = if (forYouType(seed.type) == "series") "tv" else "movie"
-                    val id = TmdbService.ensureTmdbId(seed.id, mediaType)?.toIntOrNull() ?: continue
+                    val id = TmdbService.ensureTmdbId(seed.id, mediaType, throwOnFailure = true)?.toIntOrNull() ?: continue
                     val canonicalSeed = seed.copy(id = "tmdb:$id")
-                    batches += ForYouBatch(canonicalSeed, TmdbMetadataService.fetchMoreLikeThis(id, mediaType, settings.language))
+                    batches += ForYouBatch(canonicalSeed, TmdbMetadataService.fetchMoreLikeThis(id, mediaType, settings.language, throwOnFailure = true))
                 }
                 val allExcluded = excluded + batches.map { forYouKey(it.seed.type, it.seed.id) }
                 val ranked = rankForYou(batches, allExcluded, limit = 48)
@@ -108,14 +111,17 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
                 coroutineScope {
                     ranked.map { pick -> async {
                         gate.withPermit {
-                            val imdb = TmdbService.tmdbToImdb(pick.item.id.substringAfter(':').toInt(), if (pick.item.type == "series") "tv" else "movie")
+                            val imdb = TmdbService.tmdbToImdb(pick.item.id.substringAfter(':').toInt(), if (pick.item.type == "series") "tv" else "movie", throwOnFailure = true)
                             ensureActive()
                             // Without an alias we cannot safely rule out an IMDb history match.
                             if (imdb == null || forYouKey(pick.item.type, imdb) in allExcluded) null else pick
                         }
                     } }.awaitAll().filterNotNull()
                 }
-            }.orEmpty()
+            } ?: run {
+                lookupFailed = true
+                return@ScreenActivityEffect
+            }
             ensureActive()
             // Do not publish an old owner's response while profile repositories are switching.
             if (LibraryRepository.isLoadedForProfile(profileId) && WatchedRepository.isLoadedForProfile(profileId) &&
@@ -127,6 +133,7 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
             throw cancelled
         } catch (_: Exception) {
             picks = emptyList()
+            lookupFailed = true
         } finally { loading = false }
     }
     val visible = if (ownsInputs) visibleForYou(picks, dismissed) else emptyList()
@@ -147,7 +154,9 @@ private fun ForYouProfileRow(profileId: Int, feedbackKey: String, sectionPadding
             Text(when {
                 !ownsInputs -> "Loading your library and viewing history…"
                 seeds.isEmpty() -> "Save a few favourites to your library to get personal picks here."
+                !hasTmdbKey -> "Recommendations need your TMDb key. Check account sync or Settings → TMDB Enrichment."
                 loading -> "Finding titles connected to your library and viewing…"
+                lookupFailed -> "Couldn't load recommendations. Check your connection and TMDb settings, then try again."
                 picks.isNotEmpty() -> "You've hidden these picks. Reset hidden picks to see them again."
                 else -> "No new picks right now. Save more favourites or try again."
             }, Modifier.padding(horizontal = sectionPadding), color = MaterialTheme.nuvio.colors.textSecondary, style = MaterialTheme.typography.bodyMedium)

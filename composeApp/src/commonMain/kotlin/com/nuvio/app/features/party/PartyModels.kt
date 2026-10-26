@@ -176,6 +176,9 @@ internal data class PartyChatHistory(
     val error: String? = null,
 )
 
+internal fun partyTerminalRpcError(description: String?): String? =
+    description?.trim()?.takeIf { it in setOf("party_ended", "not_member", "unavailable") }
+
 enum class PartyError {
     NotFound,
     Full,

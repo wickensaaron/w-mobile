@@ -1,5 +1,7 @@
 package com.nuvio.app.features.party
 
+import io.github.jan.supabase.exceptions.RestException
+
 import com.nuvio.app.core.network.SupabaseProvider
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
@@ -119,8 +121,13 @@ internal object PartyApi {
         SupabaseProvider.client.postgrest.rpc("watch_party_enabled").data.trim().toBooleanStrict()
 
     private suspend fun call(function: String, params: JsonObject): PartySnapshot {
-        val body = SupabaseProvider.client.postgrest.rpc(function, params).data
-        return json.decodeFromString(PartySnapshot.serializer(), body)
+        return try {
+            val body = SupabaseProvider.client.postgrest.rpc(function, params).data
+            json.decodeFromString(PartySnapshot.serializer(), body)
+        } catch (error: RestException) {
+            val code = partyTerminalRpcError(error.error) ?: partyTerminalRpcError(error.description) ?: throw error
+            PartySnapshot(error = code)
+        }
     }
 
     private fun JsonObjectBuilder.putIdentity(identity: PartyIdentity) {

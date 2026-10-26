@@ -179,6 +179,7 @@ object AuthRepository {
         }
         SupabaseProvider.client.auth.signInWith(Google, redirectUrl = "wmedia://auth/google")
     }.onFailure { error ->
+        log.e { "Google sign-in start failed: ${googleSignInDiagnostic(error)}" }
         _error.value = if (error is GoogleProviderUnavailableException) {
             "Google sign-in is not available on this server. Use email or continue as a guest."
         } else {

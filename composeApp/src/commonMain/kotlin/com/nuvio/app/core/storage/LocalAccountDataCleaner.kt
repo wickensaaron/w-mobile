@@ -57,6 +57,8 @@ internal object LocalAccountDataCleaner {
         }
 
         ProfileRepository.clearInMemory()
+        com.nuvio.app.features.tmdb.TmdbSettingsRepository.onProfileChanged()
+        com.nuvio.app.features.streaming.StreamingAvailabilityRepository.onProfileChanged()
         MemberAccessRepository.clearLocalState()
         AddonRepository.clearLocalState()
         ServerRepository.clearLocalState()

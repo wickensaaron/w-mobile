@@ -54,6 +54,8 @@ object PartyRepository {
     private val dispatcher = Dispatchers.Default.limitedParallelism(1)
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
     private val mutex = Mutex()
+    private val publishMutex = Mutex()
+    private var confirmedPlayback: PartyPlayback? = null
     private val clock = PartyClock()
 
     private val _state = MutableStateFlow(PartyUiState())
@@ -281,6 +283,7 @@ object PartyRepository {
         waitStartedAt = null
         resumedAt = null
         _playback.value = playback?.takeIf { it.mediaKey == null || it.mediaKey == party.media.key }
+        confirmedPlayback = _playback.value
         _state.value = PartyUiState(party = party)
         session.launch {
             runCatching {
@@ -309,6 +312,7 @@ object PartyRepository {
         channel = null
         localPresence = null
         _playback.value = null
+        confirmedPlayback = null
         _sharedStream.value = null
         _state.value = PartyUiState()
         PartyChat.stop()
@@ -344,6 +348,7 @@ object PartyRepository {
     private suspend fun onMessage(event: String, payload: JsonObject) {
         val party = _state.value.party ?: return
         when (event) {
+            "session_error" -> applySnapshot(PartySnapshot(error = payload.string("error")))
             "state" -> decode(payload, PartyPlayback.serializer())?.let(::accept)
             "state_request" -> {
                 if (payload.string("member_id") == party.memberId) return
@@ -451,7 +456,7 @@ object PartyRepository {
                 rejoinOrFinish()
                 return
             }
-            "party_ended" -> {
+            "party_ended", "unavailable" -> {
                 finish(PartyEvent.Ended)
                 return
             }
@@ -477,6 +482,7 @@ object PartyRepository {
         updateParty { it.copy(media = media) }
         if (changed) {
             _playback.value = playback?.takeIf { it.mediaKey == null || it.mediaKey == media.key }
+            confirmedPlayback = _playback.value
             if (_sharedStream.value?.mediaKey != media.key) _sharedStream.value = null
             ignoredWaiting.clear()
             waitStartedAt = null
@@ -491,7 +497,9 @@ object PartyRepository {
         if (candidate.mediaKey != null && candidate.mediaKey != party.media.key) return
         if (party.hostOnly && candidate.memberId != party.hostMemberId) return
         val current = _playback.value
-        if (!PartySync.isNewer(candidate, current)) return
+        if (!PartySync.acceptsServerState(candidate, confirmedPlayback)) return
+        confirmedPlayback = candidate
+        if (candidate == current) return
         if (current != null && current.paused && !candidate.paused) {
             resumedAt = clock.mark()
             if (current.waiting) ignoredWaiting += PartySync.waitingMemberIds(party, emptySet())
@@ -504,6 +512,13 @@ object PartyRepository {
     }
 
     private suspend fun publish(
+        paused: Boolean, positionMs: Long, rate: Float, waiting: Boolean,
+        at: Long = clock.nowMs(),
+    ) = publishMutex.withLock {
+        publishLocked(paused, positionMs, rate, waiting, at)
+    }
+
+    private suspend fun publishLocked(
         paused: Boolean,
         positionMs: Long,
         rate: Float,
@@ -520,8 +535,12 @@ object PartyRepository {
         }
         if (!waiting) waitStartedAt = null
         _playback.value = next
-        runCatching { channel?.send("state", encodePlayback(next)) }
-        schedulePersist()
+        val acknowledged = runRemote { channel?.send("state", encodePlayback(next)) }
+        // Settle this action before allocating the next revision on this device.
+        if (_state.value.party?.id == party.id && _state.value.party?.memberId == party.memberId) {
+            acknowledged?.let(::applySnapshot)
+            schedulePersist()
+        }
     }
 
     private fun nextPlayback(

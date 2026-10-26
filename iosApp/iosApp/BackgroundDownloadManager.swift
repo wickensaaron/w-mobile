@@ -11,15 +11,17 @@ private struct BackgroundDownloadRequest: Decodable {
     let url: String
     let fileName: String
     let headers: [String: String]
+    let wifiOnly: Bool?
 }
 
 private struct BackgroundDownloadRecord: Codable {
     let id: String
     let fileName: String
+    let wifiOnly: Bool?
 }
 
 /// The system owns each transfer, so it can continue while this app is suspended.
-/// Only download IDs and local filenames are persisted here; URLs and headers stay in URLSession.
+/// Only download IDs, local filenames and network policy are persisted here; URLs and headers stay in URLSession.
 final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     static let shared = BackgroundDownloadManager()
 
@@ -33,6 +35,9 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private var discardedFileNames = Set<String>()
     private var completedFiles: [String: (URL, Int64)] = [:]
     private var backgroundCompletion: (() -> Void)?
+    private var scheduling = false
+    private var scheduleAgain = false
+    private let maximumActiveDownloads = 2
 
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.background(withIdentifier: sessionIdentifier)
@@ -72,6 +77,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         })
         // Reassociate with tasks that the system kept running after process termination.
         _ = session
+        scheduleDownloads()
     }
 
     func handleBackgroundEvents(identifier: String, completionHandler: @escaping () -> Void) {
@@ -114,6 +120,13 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                     self.records[String($0.taskIdentifier)]?.id == request.id &&
                     $0.state != .canceling
                 }) {
+                    // Upgrade old unrestricted tasks before reattaching Wi-Fi-only items.
+                    if request.wifiOnly == true && self.records[String(existing.taskIdentifier)]?.wifiOnly != true {
+                        self.pauseDownload(request.id)
+                        self.startsWaitingForPause[request.id] = payload
+                        return
+                    }
+                    self.scheduleDownloads()
                     self.sendProgress(for: existing, id: request.id)
                     return
                 }
@@ -133,20 +146,27 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 var urlRequest = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
                 urlRequest.httpMethod = "GET"
                 urlRequest.timeoutInterval = 60
+                urlRequest.allowsCellularAccess = request.wifiOnly != true
+                urlRequest.allowsExpensiveNetworkAccess = request.wifiOnly != true
+                urlRequest.allowsConstrainedNetworkAccess = request.wifiOnly != true
                 for (name, value) in request.headers where !["range", "if-range", "accept-encoding"].contains(name.lowercased()) {
                     urlRequest.setValue(value, forHTTPHeaderField: name)
                 }
                 urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
                 let resumeURL = self.resumeDataURL(for: request.fileName)
-                let resumeData = resumeURL.flatMap { try? Data(contentsOf: $0) }
+                let policy = UserDefaults.standard.object(forKey: self.resumePolicyKey(request.fileName)) as? Bool
+                // Old resume data may contain an unrestricted URLRequest. Only reuse it
+                // when it was produced with exactly this transfer's network policy.
+                let resumeData = policy == (request.wifiOnly ?? false)
+                    ? resumeURL.flatMap { try? Data(contentsOf: $0) } : nil
                 let task = resumeData.flatMap { $0.isEmpty ? nil : self.session.downloadTask(withResumeData: $0) }
                     ?? self.session.downloadTask(with: urlRequest)
                 task.taskDescription = request.id
                 self.records[String(task.taskIdentifier)] = BackgroundDownloadRecord(
-                    id: request.id, fileName: request.fileName
+                    id: request.id, fileName: request.fileName, wifiOnly: request.wifiOnly
                 )
                 self.saveRecords()
-                task.resume()
+                self.scheduleDownloads()
                 if let resumeURL { try? FileManager.default.removeItem(at: resumeURL) }
             }
         }
@@ -167,9 +187,10 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                 try? FileManager.default.removeItem(at: destination)
             }
         }
-        session.getAllTasks { tasks in
+        session.getAllTasks { [weak self] tasks in
             tasks.filter { $0.taskDescription == id || identifiers.contains(String($0.taskIdentifier)) }
                 .forEach { $0.cancel() }
+            DispatchQueue.main.async { self?.scheduleDownloads() }
         }
     }
 
@@ -206,7 +227,10 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
                             if let data, !data.isEmpty,
                                !self.discardedFileNames.contains(record.fileName),
                                let url = self.resumeDataURL(for: record.fileName) {
-                                try? data.write(to: url, options: .atomic)
+                                if (try? data.write(to: url, options: .atomic)) != nil {
+                                    UserDefaults.standard.set(record.wifiOnly ?? false,
+                                                              forKey: self.resumePolicyKey(record.fileName))
+                                }
                             }
                             self.finishPause(id)
                         }
@@ -218,6 +242,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
 
     private func finishPause(_ id: String) {
         guard pausingIds.remove(id) != nil else { return }
+        scheduleDownloads()
         if let payload = startsWaitingForPause.removeValue(forKey: id) {
             startDownload(payload)
         }
@@ -228,6 +253,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
               !fileName.isEmpty,
               fileName == (fileName as NSString).lastPathComponent else { return }
         discardedFileNames.insert(fileName)
+        UserDefaults.standard.removeObject(forKey: resumePolicyKey(fileName))
         if let url = resumeDataURL(for: fileName) {
             try? FileManager.default.removeItem(at: url)
         }
@@ -236,6 +262,44 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
     private func resumeDataURL(for fileName: String) -> URL? {
         guard let directory = try? downloadsDirectory() else { return nil }
         return directory.appendingPathComponent(fileName + ".resume", isDirectory: false)
+    }
+
+    private func resumePolicyKey(_ fileName: String) -> String {
+        "wmedia.background-downloads.resume-policy." + fileName
+    }
+
+    /// Tasks remain suspended until one of two global transfer slots becomes free.
+    /// The persisted URLSession tasks preserve queue order across process restarts.
+    private func scheduleDownloads() {
+        if scheduling { scheduleAgain = true; return }
+        scheduling = true
+        session.getAllTasks { [weak self] tasks in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let owned = tasks.filter {
+                    self.records[String($0.taskIdentifier)] != nil &&
+                    $0.state != .canceling && $0.state != .completed
+                }.sorted { $0.taskIdentifier < $1.taskIdentifier }
+                var active = owned.filter { $0.state == .running }
+                if active.count > self.maximumActiveDownloads {
+                    for task in active.dropFirst(self.maximumActiveDownloads) { task.suspend() }
+                    active = Array(active.prefix(self.maximumActiveDownloads))
+                }
+                let slots = max(0, self.maximumActiveDownloads - active.count)
+                for task in owned.filter({ $0.state == .suspended }).prefix(slots) {
+                    task.resume()
+                    active.append(task)
+                }
+                let activeIDs = Set(active.map(\.taskIdentifier))
+                for task in owned {
+                    guard let record = self.records[String(task.taskIdentifier)] else { continue }
+                    IosBackgroundDownloadsBridgeKt.iosBackgroundDownloadQueueState(
+                        id: record.id, queued: !activeIDs.contains(task.taskIdentifier))
+                }
+                self.scheduling = false
+                if self.scheduleAgain { self.scheduleAgain = false; self.scheduleDownloads() }
+            }
+        }
     }
 
     private func saveRecords() {
@@ -305,6 +369,7 @@ final class BackgroundDownloadManager: NSObject, URLSessionDownloadDelegate {
         let key = String(task.taskIdentifier)
         guard let record = records.removeValue(forKey: key) else { return }
         saveRecords()
+        scheduleDownloads()
         if error == nil, let completed = completedFiles.removeValue(forKey: key) {
             IosBackgroundDownloadsBridgeKt.iosBackgroundDownloadFinished(
                 id: record.id,

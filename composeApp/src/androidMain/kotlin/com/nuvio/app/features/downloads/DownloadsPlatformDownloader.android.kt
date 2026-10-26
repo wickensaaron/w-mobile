@@ -29,6 +29,8 @@ internal actual object DownloadsPlatformDownloader {
         return downloadScheduler ?: AndroidDownloadScheduler(context.applicationContext).also { downloadScheduler = it }
     }
 
+    internal fun audioCheckContext(): Context? = appContext
+
     internal fun managedTransfers(): List<AndroidDownloadTransfer> =
         downloadScheduler?.store?.transfers?.value?.values?.toList().orEmpty()
 
@@ -41,6 +43,7 @@ internal actual object DownloadsPlatformDownloader {
         onSuccess: (localFileUri: String, totalBytes: Long?) -> Unit,
         onFailure: (message: String) -> Unit,
         onPaused: () -> Unit,
+        onQueueState: (Boolean) -> Unit,
     ): DownloadsTaskHandle {
         val scheduler = checkNotNull(downloadScheduler) { "Downloads are not initialized" }
         val transfer = scheduler.enqueue(request.item)
@@ -50,6 +53,7 @@ internal actual object DownloadsPlatformDownloader {
                 .takeWhile { current ->
                     if (current == null || current.generation != transfer.generation) return@takeWhile false
                     val item = current.item
+                    onQueueState(item.isQueued)
                     when (item.status) {
                         DownloadStatus.Downloading -> onProgress(item.downloadedBytes, item.totalBytes)
                         DownloadStatus.Completed -> onSuccess(checkNotNull(item.localFileUri), item.totalBytes)
