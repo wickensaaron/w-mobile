@@ -352,6 +352,7 @@ private fun PhoneNowCard(row: LiveTvAccountGuideRow, programmes: List<LiveTvProg
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
         if (row.channel.archive != null) OutlinedButton(onClick = onCatchup, modifier = Modifier.fillMaxWidth()) { Text("Catch-up / Start over") }
+        com.nuvio.app.features.streaming.BritishLiveSourceButton(row.displayName)
         OutlinedButton(onClick = onRecordNow, modifier = Modifier.fillMaxWidth()) { Text("Record now") }
         if (current != null && next != null) Text("Next  ${formatLocalHourMinute(next.startEpochMs)} · ${next.title}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -371,6 +372,7 @@ private fun SelectedProgrammeCard(row: LiveTvAccountGuideRow, programme: LiveTvP
         programme.description?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 3) }
         Button(onClick = { LiveTvRepository.requestPlayback(row.channel) }, modifier = Modifier.fillMaxWidth()) { Text(if (current) "▶  Watch live" else "▶  Watch channel") }
         if (row.channel.archive != null) OutlinedButton(onClick = onCatchup, modifier = Modifier.fillMaxWidth()) { Text("Catch-up / Start over") }
+        com.nuvio.app.features.streaming.BritishLiveSourceButton(row.displayName)
         if (programme.stopEpochMs > nowMs) OutlinedButton(onClick = onRecord, modifier = Modifier.fillMaxWidth()) { Text("Record programme") }
     }
 }

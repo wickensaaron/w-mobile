@@ -1,5 +1,9 @@
 package com.nuvio.app.features.search
 
+import com.nuvio.app.features.streaming.StreamingApiConfig
+import com.nuvio.app.features.streaming.BritishTvRepository
+import com.nuvio.app.features.streaming.StreamingAvailabilityRepository
+import com.nuvio.app.features.streaming.mergeBritishSearchSections
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.i18n.localizedMediaTypeLabel
 import com.nuvio.app.features.addons.AddonCatalog
@@ -79,6 +83,7 @@ object SearchRepository {
         query: String,
         addons: List<ManagedAddon>,
         forceRefresh: Boolean = false,
+        streamingConfig: StreamingApiConfig = StreamingAvailabilityRepository.config.value,
     ) {
         val normalizedQuery = query.trim()
         if (normalizedQuery.isBlank()) {
@@ -91,7 +96,9 @@ object SearchRepository {
         val addonManifestErrorMessage = enabledAddons.firstEnabledManifestError()
         val activeAddons = enabledAddons.filter { it.manifest != null }
         val serverSearches = ServerCatalog.searchTargets()
-        if (activeAddons.isEmpty() && serverSearches.isEmpty()) {
+        val britishSettings = streamingConfig
+        val britishSearchEnabled = britishSettings.isConfigured && britishSettings.normalizedCountry == "gb"
+        if (activeAddons.isEmpty() && serverSearches.isEmpty() && !britishSearchEnabled) {
             activeJob?.cancel()
             lastRequestKey = null
             _uiState.value = SearchUiState(
@@ -110,7 +117,7 @@ object SearchRepository {
             addons = activeAddons,
             query = normalizedQuery,
         )
-        if (requests.isEmpty() && serverSearches.isEmpty()) {
+        if (requests.isEmpty() && serverSearches.isEmpty() && !britishSearchEnabled) {
             activeJob?.cancel()
             lastRequestKey = null
             _uiState.value = SearchUiState(
@@ -121,6 +128,8 @@ object SearchRepository {
         }
 
         val requestKey = buildString {
+            append(StreamingAvailabilityRepository.revision)
+            append('|')
             append(normalizedQuery.lowercase())
             append('|')
             append(HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent)
@@ -148,6 +157,9 @@ object SearchRepository {
                         }
                     }
                 }
+        val allLoaders = loaders + if (britishSearchEnabled) listOf<suspend () -> HomeCatalogSection>(
+            { BritishTvRepository.searchSection(normalizedQuery, britishSettings) },
+        ) else emptyList()
         if (canReuseRequestState(forceRefresh, requestKey, lastRequestKey)) return
         lastRequestKey = requestKey
 
@@ -156,7 +168,7 @@ object SearchRepository {
 
         activeJob = scope.launch {
             val resultChannel = Channel<IndexedSearchResult>(Channel.UNLIMITED)
-            val jobs = loaders.mapIndexed { index, load ->
+            val jobs = allLoaders.mapIndexed { index, load ->
                 launch {
                     runCatching { load() }
                         .fold(
@@ -184,7 +196,7 @@ object SearchRepository {
                 jobs.joinAll()
                 resultChannel.close()
             }
-            val results = arrayOfNulls<IndexedSearchResult>(loaders.size)
+            val results = arrayOfNulls<IndexedSearchResult>(allLoaders.size)
 
             try {
                 for (result in resultChannel) {
@@ -639,7 +651,7 @@ private data class IndexedSearchResult(
 )
 
 private fun Array<IndexedSearchResult?>.orderedSections(): List<HomeCatalogSection> =
-    mapNotNull { result -> result?.section }
+    mergeBritishSearchSections(mapNotNull { result -> result?.section })
 
 private fun CatalogPage.withUnreleasedFilter(): CatalogPage {
     if (!HomeCatalogSettingsRepository.snapshot().hideUnreleasedContent) return this

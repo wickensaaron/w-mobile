@@ -8,6 +8,7 @@ import com.nuvio.app.features.shuffle.shuffleEpisodeProgress
 import com.nuvio.app.features.shuffle.watchedShuffleEpisodes
 import com.nuvio.app.features.profiles.ProfileRepository
 import com.nuvio.app.features.watched.WatchedRepository
+import com.nuvio.app.features.watching.sync.currentNuvioSyncIdentity
 
 object ResumePromptRepository {
 
@@ -22,17 +23,22 @@ object ResumePromptRepository {
     }
 
     suspend fun consumeResumePrompt(): ContinueWatchingItem? {
-        val wasInPlayer = ResumePromptStorage.loadWasInPlayer()
-        if (!wasInPlayer) return null
-
-        val videoId = ResumePromptStorage.loadLastPlayerVideoId()
+        val profileId = ProfileRepository.activeProfileId
+        val identity = currentNuvioSyncIdentity()
+        val isCurrentContext = {
+            ProfileRepository.activeProfileId == profileId && currentNuvioSyncIdentity() == identity
+        }
+        WatchProgressRepository.ensureLoaded()
+        val entry = loadLatestResumePromptEntry(
+            refreshProgress = {
+                WatchProgressSourceCoordinator.refreshActiveSource(profileId, force = true)
+            },
+            isCurrentContext = isCurrentContext,
+            readProgress = { WatchProgressRepository.uiState.value },
+        ) ?: return null
         ResumePromptStorage.saveWasInPlayer(false)
         ResumePromptStorage.saveLastPlayerVideoId(null)
 
-        if (videoId.isNullOrBlank()) return null
-
-        WatchProgressRepository.ensureLoaded()
-        val entry = WatchProgressRepository.progressForVideo(videoId) ?: return null
         if (entry.isUnsupportedMobileLiveTvProgress()) return null
 
         if (entry.isResumable) {
@@ -45,13 +51,14 @@ object ResumePromptRepository {
             type = entry.parentMetaType,
             id = entry.parentMetaId,
         ) ?: return null
+        if (!isCurrentContext()) return null
 
         EpisodeShuffleRepository.ensureLoaded()
         val settings = EpisodeShuffleRepository.uiState.value.settings(meta.id, meta.type)
         val nextEpisode = if (settings.enabled) {
             WatchedRepository.ensureLoaded()
             EpisodeShuffleRepository.shuffle.select(
-                ProfileRepository.activeProfileId, meta.id, meta.videos, settings.includeWatched,
+                profileId, meta.id, meta.videos, settings.includeWatched,
                 watchedShuffleEpisodes(meta.id, meta.type, meta.videos, WatchedRepository.uiState.value.watchedKeys),
                 shuffleEpisodeProgress(meta.id, WatchProgressRepository.uiState.value.entries),
                 ShuffleSurface.PLAYBACK, current = entry.seasonNumber!! to entry.episodeNumber!!,
@@ -61,7 +68,7 @@ object ResumePromptRepository {
             episodeNumber = entry.episodeNumber,
             todayIsoDate = CurrentDateProvider.todayIsoDate(),
         )
-        if (nextEpisode == null) return null
+        if (nextEpisode == null || !isCurrentContext()) return null
 
         return entry.toUpNextContinueWatchingItem(nextEpisode).let { item ->
             if (settings.enabled) item.copy(shufflePlayback = true, isReleaseAlert = false, isNewSeasonRelease = false)

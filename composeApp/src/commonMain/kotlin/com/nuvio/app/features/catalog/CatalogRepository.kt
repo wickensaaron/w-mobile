@@ -136,6 +136,10 @@ object CatalogRepository {
         activeJob = scope.launch {
             runCatching {
                 when (val target = request.target) {
+                    is CatalogTarget.BritishSearch -> {
+                        val items = com.nuvio.app.features.streaming.BritishTvRepository.search(target.query)
+                        CatalogPage(items, items.size, null)
+                    }
                     is CatalogTarget.Addon -> fetchCatalogPage(
                         manifestUrl = target.manifestUrl,
                         type = target.contentType,

@@ -67,6 +67,7 @@ import com.nuvio.app.features.franchise.FilmFranchisePreview
 import com.nuvio.app.core.ui.NuvioShelfSection
 import com.nuvio.app.features.franchise.FilmFranchiseRepository
 import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.streaming_britbox
 import nuvio.composeapp.generated.resources.streaming_apple_hd
 import nuvio.composeapp.generated.resources.streaming_disney
 import nuvio.composeapp.generated.resources.streaming_netflix_raster
@@ -84,6 +85,7 @@ private fun StreamingService.style(): ServiceStyle = when (this) {
     StreamingService.NETFLIX -> ServiceStyle(Color(0xFF141414), Color(0xFFE50914), Color(0xFF6D1520))
     StreamingService.PRIME -> ServiceStyle(Color(0xFF07121F), Color(0xFF28B9E8), Color(0xFF14506A))
     StreamingService.DISNEY -> ServiceStyle(Color(0xFF071827), Color(0xFF78DDF0), Color(0xFF126074))
+    StreamingService.BRITBOX -> ServiceStyle(Color(0xFF071B24), Color(0xFF00C9EB), Color(0xFF14556A))
     StreamingService.APPLE -> ServiceStyle(Color(0xFF090A0D), Color.White, Color(0xFF393B43))
 }
 
@@ -134,6 +136,7 @@ private fun ServiceHomeTile(
                 StreamingService.NETFLIX -> Modifier.width(158.dp).height(44.dp)
                 StreamingService.PRIME -> Modifier.width(166.dp).height(53.dp)
                 StreamingService.DISNEY -> Modifier.fillMaxSize()
+                StreamingService.BRITBOX -> Modifier.width(158.dp).height(53.dp)
                 StreamingService.APPLE -> Modifier.width(104.dp).height(53.dp)
             },
         )
@@ -147,6 +150,7 @@ private fun ServiceLogo(service: StreamingService, modifier: Modifier = Modifier
             StreamingService.NETFLIX -> Res.drawable.streaming_netflix_raster
             StreamingService.PRIME -> Res.drawable.streaming_prime_wordmark_hd
             StreamingService.DISNEY -> Res.drawable.streaming_disney
+            StreamingService.BRITBOX -> Res.drawable.streaming_britbox
             StreamingService.APPLE -> Res.drawable.streaming_apple_hd
         }),
         contentDescription = service.displayName,
@@ -263,19 +267,25 @@ fun StreamingServiceScreen(
                         }
                     }
                 }
+                if (service == StreamingService.BRITBOX) {
+                    item(key = "british_collection") {
+                        Text("British on demand · BBC iPlayer · ITVX · Channel 4",
+                            color = style.accent, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
+                    }
+                }
                 if (page.topFilms.isNotEmpty()) {
                     item(key = "films") {
                         ServicePosterRow(
-                            if (service == StreamingService.APPLE) "Popular Films" else "Top 10 Films",
-                            page.topFilms, service, style, onPosterClick, ranked = service != StreamingService.APPLE,
+                            if (service == StreamingService.APPLE || service == StreamingService.BRITBOX) "Popular Films" else "Top 10 Films",
+                            page.topFilms, service, style, onPosterClick, ranked = service != StreamingService.APPLE && service != StreamingService.BRITBOX,
                         )
                     }
                 }
                 if (page.topSeries.isNotEmpty()) {
                     item(key = "series") {
                         ServicePosterRow(
-                            if (service == StreamingService.APPLE) "Popular Series" else "Top 10 Series",
-                            page.topSeries, service, style, onPosterClick, ranked = service != StreamingService.APPLE,
+                            if (service == StreamingService.APPLE || service == StreamingService.BRITBOX) "Popular Series" else "Top 10 Series",
+                            page.topSeries, service, style, onPosterClick, ranked = service != StreamingService.APPLE && service != StreamingService.BRITBOX,
                         )
                     }
                 }
@@ -403,7 +413,7 @@ private fun StreamingApiSetup(config: StreamingApiConfig, style: ServiceStyle, o
     ) {
         Text("Connect Streaming Availability", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
         Text("Enter your Movie of the Night API key to load live service charts.", color = Color(0xFFB9C0C7))
-        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = Color.LightGray, cursorColor = Color.White), 
+        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = Color.LightGray, cursorColor = Color.White),
             value = apiKey,
             onValueChange = { apiKey = it },
             label = { Text("API key") },
@@ -422,7 +432,7 @@ private fun StreamingApiSetup(config: StreamingApiConfig, style: ServiceStyle, o
                 ) { Text(label) }
             }
         }
-        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = Color.LightGray, cursorColor = Color.White), 
+        OutlinedTextField(colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedLabelColor = Color.White, unfocusedLabelColor = Color.LightGray, cursorColor = Color.White),
             value = country,
             onValueChange = { country = it.take(2) },
             label = { Text("Country code") },

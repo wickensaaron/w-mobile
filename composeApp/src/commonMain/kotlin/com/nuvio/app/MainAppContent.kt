@@ -695,7 +695,14 @@ internal fun MainAppContent(
             SyncManager.stopPeriodicNuvioSyncPull()
         }
     }
-    var resumePromptItem by remember { mutableStateOf<ContinueWatchingItem?>(null) }
+    val resumePromptAccountId = (authState as? AuthState.Authenticated)?.userId
+    val resumePromptProfileId = profileState.activeProfile?.profileIndex
+    var resumePromptItem by remember(resumePromptAccountId, resumePromptProfileId) {
+        mutableStateOf<ContinueWatchingItem?>(null)
+    }
+    var resumePromptHandled by remember(resumePromptAccountId, resumePromptProfileId) {
+        mutableStateOf(false)
+    }
     var lastExternalPlayerLaunch by remember { mutableStateOf<PlayerLaunch?>(null) }
     val activePlaybackProfileId = profileState.activeProfile?.profileIndex ?: ProfileRepository.activeProfileId
     val launchExternalPlayer = rememberExternalPlayerLauncher { result ->
@@ -714,16 +721,22 @@ internal fun MainAppContent(
 
     LaunchedEffect(
         initialHomeReady,
+        resumePromptAccountId,
+        currentRoute,
         profileSwitchLoading,
         profileState.activeProfile?.profileIndex,
         continueWatchingPreferencesUiState.showResumePromptOnLaunch,
     ) {
         if (!ownsAppRuntime) return@LaunchedEffect
         if (!initialHomeReady || profileSwitchLoading) return@LaunchedEffect
-        if (resumePromptItem != null) return@LaunchedEffect
-        if (currentRoute is StreamRoute || currentRoute is PlayerRoute || currentRoute is PartyRoute) return@LaunchedEffect
+        if (resumePromptHandled || resumePromptItem != null) return@LaunchedEffect
+        if (currentRoute is StreamRoute || currentRoute is PlayerRoute || currentRoute is PartyRoute) {
+            resumePromptHandled = true
+            return@LaunchedEffect
+        }
         if (continueWatchingPreferencesUiState.showResumePromptOnLaunch) {
             resumePromptItem = ResumePromptRepository.consumeResumePrompt()
+            resumePromptHandled = true
         }
     }
 

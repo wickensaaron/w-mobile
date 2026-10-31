@@ -1,5 +1,8 @@
 package com.nuvio.app.features.streams
 
+import com.nuvio.app.features.streaming.BritishTvRepository
+import com.nuvio.app.features.streaming.StreamingAvailabilityRepository
+import com.nuvio.app.features.streaming.britishShowId
 import co.touchlab.kermit.Logger
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.features.addons.AddonRepository
@@ -88,7 +91,7 @@ object StreamsRepository {
             episode = episode,
             manualSelection = manualSelection,
         )
-        val requestKey = "$requestToken::pluginsGrouped=${pluginUiState.groupStreamsByRepository}::core=${WCorePlaybackSources.cacheScope()}"
+        val requestKey = "$requestToken::british=${StreamingAvailabilityRepository.revision}::pluginsGrouped=${pluginUiState.groupStreamsByRepository}::core=${WCorePlaybackSources.cacheScope()}"
         val currentState = _uiState.value
         if (
             !forceRefresh &&
@@ -174,6 +177,9 @@ object StreamsRepository {
         }
 
         val isNativeServerRequest = ServerStreams.isNativeRequest(videoId)
+        val britishSettings = StreamingAvailabilityRepository.config.value
+        val britishId = parentMetaId ?: videoId
+        val britishProviders = if (BritishTvRepository.enabled && britishShowId(type, britishId) != null) BritishTvRepository.providers else emptyList()
         val serverSources = ServerStreams.sources(type, videoId, season, episode, forceRefresh)
         val preferredGroupIds = serverSources.filter { it.preferred }.mapTo(mutableSetOf()) { it.addonId }
         val installedAddons = if (isNativeServerRequest) emptyList() else AddonRepository.uiState.value.addons.enabledAddons()
@@ -187,7 +193,7 @@ object StreamsRepository {
             groupByRepository = pluginUiState.groupStreamsByRepository,
         )
 
-        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null && serverSources.isEmpty()) {
+        if (installedAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null && serverSources.isEmpty() && britishProviders.isEmpty()) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
                 isAnyLoading = false,
@@ -211,7 +217,7 @@ object StreamsRepository {
 
         log.d { "Found ${streamAddons.size} addons for stream type=$type id=$videoId" }
 
-        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null && serverSources.isEmpty()) {
+        if (streamAddons.isEmpty() && pluginProviderGroups.isEmpty() && wCoreRequest == null && serverSources.isEmpty() && britishProviders.isEmpty()) {
             _uiState.value = StreamsUiState(
                 requestToken = requestToken,
                 isAnyLoading = false,
@@ -244,7 +250,9 @@ object StreamsRepository {
                 streams = emptyList(),
                 isLoading = true,
             )
-        } + serverSources.map { it.loadingGroup() }, installedAddonOrder, preferredGroupIds)
+        } + serverSources.map { it.loadingGroup() } + britishProviders.map { provider ->
+            AddonStreamGroup(addonName = provider.name, addonId = provider.groupId, streams = emptyList(), isLoading = true)
+        }, installedAddonOrder, preferredGroupIds)
         val isInitiallyLoading = initialGroups.any { it.isLoading }
         _uiState.value = StreamsUiState(
             requestToken = requestToken,
@@ -265,7 +273,7 @@ object StreamsRepository {
             val pluginFirstErrorByAddonId = mutableMapOf<String, String>()
             val totalTasks = streamAddons.size +
                 pluginProviderGroups.sumOf { it.scrapers.size } +
-                (if (wCoreRequest != null) 1 else 0) + serverSources.size
+                (if (wCoreRequest != null) 1 else 0) + serverSources.size + britishProviders.size
 
             val installedAddonNames = installedAddonOrder.toSet()
             val installedAddonIds = streamAddons.map { it.addonId }.toSet()
@@ -541,6 +549,16 @@ object StreamsRepository {
                                 error = "W Core sources unavailable",
                             )
                         }
+                    publishCompletion(StreamLoadCompletion.Addon(group))
+                }
+            }
+
+            if (britishProviders.isNotEmpty()) launch {
+                val result = runCatchingUnlessCancelled { BritishTvRepository.sources(type, britishId, britishSettings) }
+                britishProviders.forEach { provider ->
+                    val group = result.getOrNull()?.find { it.addonId == provider.groupId }
+                        ?: AddonStreamGroup(addonName = provider.name, addonId = provider.groupId, streams = emptyList(),
+                            error = if (result.isFailure) "Broadcaster availability could not be checked. Retry to check again." else null)
                     publishCompletion(StreamLoadCompletion.Addon(group))
                 }
             }

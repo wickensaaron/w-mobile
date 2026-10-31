@@ -20,7 +20,8 @@ enum class StreamingService(val apiId: String, val displayName: String) {
     NETFLIX("netflix", "Netflix"),
     PRIME("prime", "Prime Video"),
     DISNEY("disney", "Disney+"),
-    APPLE("apple", "Apple TV");
+    APPLE("apple", "Apple TV"),
+    BRITBOX("britbox", "BritBox");
 
     companion object {
         fun fromId(id: String): StreamingService? = entries.firstOrNull { it.apiId == id }
@@ -66,10 +67,13 @@ object StreamingAvailabilityRepository {
     private val json = Json { ignoreUnknownKeys = true }
     private val _config = MutableStateFlow(loadConfig())
     val config = _config.asStateFlow()
+    var revision: Int = 0
+        private set
     private val pageCache = mutableMapOf<String, CachedPage>()
 
     fun onProfileChanged() {
         _config.value = loadConfig()
+        revision++
         pageCache.clear()
     }
 
@@ -81,6 +85,7 @@ object StreamingAvailabilityRepository {
         )
         _config.value = value
         StreamingAvailabilityStorage.saveConfig(json.encodeToString(StreamingApiConfig.serializer(), value))
+        revision++
         pageCache.clear()
     }
 
@@ -89,6 +94,11 @@ object StreamingAvailabilityRepository {
         require(settings.isConfigured) { "Add your Streaming Availability API key to load this service." }
         val cacheKey = "${settings.source}:${settings.normalizedCountry}:${settings.apiKey}:${service.apiId}"
         if (!force) pageCache[cacheKey]?.takeIf { it.loadedAt.elapsedNow() < 6.hours }?.let { return it.data }
+        if (service == StreamingService.BRITBOX) {
+            return BritishTvRepository.loadPage(settings).also {
+                if (settings == config.value) pageCache[cacheKey] = CachedPage(TimeSource.Monotonic.markNow(), it)
+            }
+        }
         val country = settings.normalizedCountry
         val topBase = "/shows/top?country=$country&service=${service.apiId}"
         val catalogBase = "/shows/search/filters?country=$country&catalogs=${service.apiId}.subscription"
@@ -140,7 +150,7 @@ object StreamingAvailabilityRepository {
         )
     }
 
-    private suspend fun request(path: String, settings: StreamingApiConfig): kotlinx.serialization.json.JsonElement {
+    internal suspend fun request(path: String, settings: StreamingApiConfig): kotlinx.serialization.json.JsonElement {
         val rapid = settings.source == "rapidapi"
         val base = if (rapid) "https://streaming-availability.p.rapidapi.com" else "https://api.movieofthenight.com/v4"
         val header = if (rapid) "X-RapidAPI-Key" else "X-API-Key"
@@ -176,7 +186,8 @@ private fun JsonObject.toPreview(): MetaPreview? {
         poster = poster,
         banner = backdrop,
         description = string("overview"),
-        releaseInfo = string("releaseYear"),
+        releaseInfo = string("releaseYear") ?: string("firstAirYear"),
+        alternateIds = setOfNotNull(imdbId, tmdbId?.substringAfterLast('/')?.toIntOrNull()?.let { "tmdb:$it" }),
     )
 }
 

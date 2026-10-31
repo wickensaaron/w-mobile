@@ -21,6 +21,8 @@ data class MetaPreview(
     val rawPosterUrl: String? = null,
     val landscapePoster: String? = null,
     val rawLandscapePosterUrl: String? = null,
+    /** Other verified IDs for the same title, used when merging catalogue results. */
+    val alternateIds: Set<String> = emptySet(),
 )
 
 fun MetaPreview.stableKey(): String = "$type:$id"

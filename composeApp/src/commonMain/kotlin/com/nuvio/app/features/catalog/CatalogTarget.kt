@@ -7,6 +7,11 @@ sealed interface CatalogTarget {
     val contentType: String
     val supportsPagination: Boolean
 
+    data class BritishSearch(val query: String) : CatalogTarget {
+        override val contentType: String = "series"
+        override val supportsPagination: Boolean = false
+    }
+
     data class Addon(
         val manifestUrl: String,
         override val contentType: String,

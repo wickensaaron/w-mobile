@@ -1,14 +1,14 @@
 workflows:
-  sidestore_ipa:
+  sidestore_ipa: &sidestore_ipa
     name: W Media Player SideStore IPA
     instance_type: mac_mini_m2
     max_build_duration: 120
-    environment:
+    environment: &ios_environment
       xcode: "26.6"
       java: 17
       groups:
         - w_media_public
-      vars:
+      vars: &ios_vars
         IOS_CONFIGURATION: Debug
         NUVIO_SUPABASE_URL: https://mclzacllioaczhrjdehv.supabase.co
         NUVIO_GRADLE_JVMARGS: -Xmx7168M -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=768M
@@ -34,3 +34,11 @@ workflows:
       - build/ios-ipa/*-build-info.txt
       - build/ios-ipa/*.ipa.sha256
       - /tmp/xcodebuild_logs/*.log
+  sidestore_release_ipa:
+    <<: *sidestore_ipa
+    name: W Media Player SideStore Release IPA
+    environment:
+      <<: *ios_environment
+      vars:
+        <<: *ios_vars
+        IOS_CONFIGURATION: Release

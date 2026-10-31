@@ -97,6 +97,8 @@ object StreamAutoPlaySelector {
             }
         }
         val candidateStreams = sourceScopedStreams.filter { stream ->
+            // Official-player handoffs always require the viewer to choose them.
+            if (stream.addonId.startsWith("broadcaster:")) return@filter false
             if (balancedSelection && !BalancedAutoPlayPolicy.isEligible(stream)) return@filter false
             val isAddonStream = stream.addonName in installedAddonNames
             if (stream.serverTarget != null || stream.addonId.startsWith("$W_CORE_ADDON_ID:")) {

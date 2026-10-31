@@ -78,7 +78,7 @@ class SearchRequestStateTest {
 
         try {
             SearchRepository.reset()
-            SearchRepository.search(query = "movie", addons = listOf(pendingAddon))
+            SearchRepository.search(query = "movie", addons = listOf(pendingAddon), streamingConfig = com.nuvio.app.features.streaming.StreamingApiConfig())
             SearchRepository.refreshDiscover(addons = listOf(pendingAddon))
 
             assertTrue(SearchRepository.uiState.value.isLoading)
@@ -86,7 +86,7 @@ class SearchRequestStateTest {
             assertTrue(SearchRepository.discoverUiState.value.isLoading)
             assertEquals(null, SearchRepository.discoverUiState.value.emptyStateReason)
 
-            SearchRepository.search(query = "movie", addons = listOf(failedAddon))
+            SearchRepository.search(query = "movie", addons = listOf(failedAddon), streamingConfig = com.nuvio.app.features.streaming.StreamingApiConfig())
             SearchRepository.refreshDiscover(addons = listOf(failedAddon))
 
             assertFalse(SearchRepository.uiState.value.isLoading)
@@ -129,13 +129,13 @@ class SearchRequestStateTest {
 
         try {
             SearchRepository.reset()
-            SearchRepository.search(query = "movie", addons = listOf(loadedAddon, pendingAddon))
+            SearchRepository.search(query = "movie", addons = listOf(loadedAddon, pendingAddon), streamingConfig = com.nuvio.app.features.streaming.StreamingApiConfig())
             SearchRepository.refreshDiscover(addons = listOf(loadedAddon, pendingAddon))
 
             assertTrue(SearchRepository.uiState.value.isLoading)
             assertTrue(SearchRepository.discoverUiState.value.isLoading)
 
-            SearchRepository.search(query = "movie", addons = listOf(loadedAddon, failedAddon))
+            SearchRepository.search(query = "movie", addons = listOf(loadedAddon, failedAddon), streamingConfig = com.nuvio.app.features.streaming.StreamingApiConfig())
             SearchRepository.refreshDiscover(addons = listOf(loadedAddon, failedAddon))
 
             assertFalse(SearchRepository.uiState.value.isLoading)

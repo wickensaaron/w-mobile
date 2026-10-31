@@ -29,7 +29,7 @@ internal fun List<AddonStreamGroup>.areAutoPlaySourcesLoaded(
     source: StreamAutoPlaySource,
     installedAddonIds: Set<String>,
 ): Boolean = none { group ->
-    group.isLoading && when (source) {
+    group.isLoading && !group.addonId.startsWith("broadcaster:") && when (source) {
         StreamAutoPlaySource.ALL_SOURCES -> true
         StreamAutoPlaySource.INSTALLED_ADDONS_ONLY -> group.addonId in installedAddonIds
         StreamAutoPlaySource.ENABLED_PLUGINS_ONLY ->

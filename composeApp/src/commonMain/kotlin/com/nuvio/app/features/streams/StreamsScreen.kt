@@ -1048,7 +1048,7 @@ private fun StreamActionsSheet(
                     }
                 },
             )
-            if (!stream.isWCoreStream && stream.serverTarget == null) {
+            if (!stream.isWCoreStream && stream.serverTarget == null && !stream.shouldOpenExternally) {
                 NuvioBottomSheetDivider()
                 NuvioBottomSheetActionRow(
                     icon = Icons.AutoMirrored.Rounded.OpenInNew,
